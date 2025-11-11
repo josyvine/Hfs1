@@ -18,6 +18,9 @@ android {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
+        debug {
+            minifyEnabled false
+        }
     }
 
     compileOptions {
@@ -33,6 +36,13 @@ android {
 
     aaptOptions {
         noCompress "txt"
+    }
+
+    // Optional – ensures native .so libraries from libtorrent4j are packaged correctly
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = false
+        }
     }
 }
 
@@ -84,7 +94,7 @@ dependencies {
     implementation 'com.google.firebase:firebase-auth'
     implementation 'com.google.firebase:firebase-firestore'
 
-    // Torrent client
+    // ✅ Libtorrent4j (core + native Android architectures)
     def libtorrentVersion = "2.1.0-38"
     implementation "org.libtorrent4j:libtorrent4j:$libtorrentVersion"
     implementation "org.libtorrent4j:libtorrent4j-android-arm64:$libtorrentVersion"
