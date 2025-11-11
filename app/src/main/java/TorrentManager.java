@@ -104,7 +104,7 @@ public class TorrentManager {
                         else if (alert instanceof TorrentFinishedAlert) handleTorrentFinished((TorrentFinishedAlert) alert);
                         else if (alert instanceof TorrentErrorAlert) handleTorrentError((TorrentErrorAlert) alert);
                     } catch (Throwable ignored) {
-                        Log.w(TAG, "Unknown alert type received: " + t.getMessage());
+                        Log.w(TAG, "Unknown alert type received: " + ignored.getMessage());
                     }
                 }
             }
@@ -623,16 +623,26 @@ public class TorrentManager {
         return callMethodIfExists(target, methodName, new Class[]{}, new Object[]{});
     }
 
-    private Object callStaticMethodIfExists(Class<?> cls, String methodName, Class[] paramTypes, Object[] params) throws Exception {
-        Method m = findMethod(cls, methodName, paramTypes);
-        if (m == null) return null;
-        m.setAccessible(true);
-        return m.invoke(null, params);
+    /**
+     * Safe static-method-invoker: tries to find and invoke a static method and returns the result,
+     * or null on any failure. This single safe implementation replaces problematic duplicates.
+     */
+    private Object callStaticMethodIfExists(Class<?> cls, String methodName, Class[] paramTypes, Object[] params) {
+        if (cls == null) return null;
+        try {
+            Method m = findMethod(cls, methodName, paramTypes);
+            if (m == null) return null;
+            m.setAccessible(true);
+            return m.invoke(null, params);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     private Method findMethod(Class<?> cls, String name, Class[] paramTypes) {
         if (cls == null) return null;
         try {
+            if (paramTypes == null) paramTypes = new Class[]{};
             return cls.getMethod(name, paramTypes);
         } catch (NoSuchMethodException e) {
             // try declared methods
@@ -651,6 +661,7 @@ public class TorrentManager {
     }
 
     private Constructor<?> findConstructor(Class<?> cls, Class[] paramTypes) {
+        if (paramTypes == null) paramTypes = new Class[]{};
         try {
             return cls.getConstructor(paramTypes);
         } catch (NoSuchMethodException e) {
