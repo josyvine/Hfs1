@@ -24,5 +24,15 @@
         android:textSize="16sp"
         android:textStyle="bold" />
 
-</RelativeLayout>
+    <!-- NEW: Minimize/Expand Icon -->
+    <ImageView
+        android:id="@+id/header_arrow"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:layout_alignParentEnd="true"
+        android:layout_centerVertical="true"
+        android:src="@android:drawable/arrow_up_float"
+        android:padding="4dp"
+        android:contentDescription="Minimize" />
 
+</RelativeLayout>
