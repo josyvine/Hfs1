@@ -5,14 +5,12 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
-import android.media.MediaMetadataRetriever;
+import android.graphics.pdf.PdfRenderer;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
-import android.provider.MediaStore;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -22,7 +20,10 @@ import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.RecyclerView;
 
-import android.graphics.pdf.PdfRenderer; // Import PdfRenderer
+import com.bumptech.glide.Glide;
+import com.bumptech.glide.load.engine.DiskCacheStrategy;
+import com.bumptech.glide.request.RequestOptions;
+
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
@@ -34,6 +35,8 @@ public class MassDeleteAdapter extends RecyclerView.Adapter<MassDeleteAdapter.It
     private final Context context;
     private List<SearchResult> listItems;
     private final OnItemClickListener itemClickListener;
+    
+    // RESTORED: Executor for PDF/APK manual generation
     private final ExecutorService thumbnailExecutor = Executors.newFixedThreadPool(4);
 
     public interface OnItemClickListener {
@@ -60,10 +63,9 @@ public class MassDeleteAdapter extends RecyclerView.Adapter<MassDeleteAdapter.It
 
         holder.indexNumber.setText(String.valueOf(position + 1));
         holder.exclusionOverlay.setVisibility(item.isExcluded() ? View.GONE : View.VISIBLE);
-        holder.thumbnailImage.setImageResource(android.R.color.darker_gray);
         holder.thumbnailImage.setTag(item.getUri().toString());
 
-        // --- NEW LOGIC FOR DISPLAYING FILENAME ---
+        // Display Filename logic
         if (isMediaFile(item.getDisplayName())) {
             holder.fileNameText.setVisibility(View.GONE);
         } else {
@@ -71,138 +73,90 @@ public class MassDeleteAdapter extends RecyclerView.Adapter<MassDeleteAdapter.It
             holder.fileNameText.setText(item.getDisplayName());
         }
 
-        thumbnailExecutor.execute(new Runnable() {
-				@Override
-				public void run() {
-					final Bitmap thumbnail = createThumbnail(item);
-                    final int fallbackIconResId = (thumbnail == null) ? getIconForFileType(item.getDisplayName()) : 0;
+        String displayName = item.getDisplayName();
+        int fallbackIcon = getIconForFileType(displayName);
 
-					if (holder.thumbnailImage.getTag().equals(item.getUri().toString())) {
-						holder.thumbnailImage.post(new Runnable() {
-								@Override
-								public void run() {
-                                    if (thumbnail != null) {
-									    holder.thumbnailImage.setImageBitmap(thumbnail);
-                                    } else {
-                                        holder.thumbnailImage.setImageResource(fallbackIconResId);
-                                    }
-								}
-							});
-					}
-				}
-			});
+        // HYBRID LOADING STRATEGY:
+        // 1. PDF/APK -> Use Manual Executor (Original Logic)
+        // 2. Images/Videos -> Use Glide (New Logic)
+        
+        boolean isPdfOrApk = displayName != null && (displayName.toLowerCase().endsWith(".pdf") || displayName.toLowerCase().endsWith(".apk"));
 
-        holder.itemView.setOnClickListener(new View.OnClickListener() {
-				@Override
-				public void onClick(View v) {
-					if (itemClickListener != null) {
-						itemClickListener.onItemClick(item);
-					}
-				}
-			});
+        if (isPdfOrApk) {
+            // Restore placeholder
+            holder.thumbnailImage.setImageResource(fallbackIcon);
+            
+            thumbnailExecutor.execute(() -> {
+                final Bitmap thumbnail = createSpecialThumbnail(item); // Uses restored methods
+                if (thumbnail != null && holder.thumbnailImage.getTag().equals(item.getUri().toString())) {
+                    holder.thumbnailImage.post(() -> holder.thumbnailImage.setImageBitmap(thumbnail));
+                }
+            });
+        } else {
+            // Use Glide for everything else (Images, Videos)
+            Glide.with(context)
+                .load(item.getUri())
+                .apply(new RequestOptions()
+                    .placeholder(fallbackIcon)
+                    .error(fallbackIcon)
+                    .diskCacheStrategy(DiskCacheStrategy.ALL)
+                    .centerCrop())
+                .into(holder.thumbnailImage);
+        }
 
-        // The setOnLongClickListener is intentionally removed here.
-        // The DragSelectTouchListener attached to the RecyclerView handles the long-press gesture.
+        holder.itemView.setOnClickListener(v -> {
+            if (itemClickListener != null) {
+                itemClickListener.onItemClick(item);
+            }
+        });
     }
 
-    // --- NEW HELPER: CHECK IF FILE IS IMAGE OR VIDEO ---
     private boolean isMediaFile(String fileName) {
-        if (fileName == null) {
-            return false;
-        }
+        if (fileName == null) return false;
         String lowerFileName = fileName.toLowerCase();
         List<String> mediaExtensions = Arrays.asList(
-            ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", // Images
-            ".mp4", ".3gp", ".mkv", ".webm", ".avi"         // Videos
+            ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
+            ".mp4", ".3gp", ".mkv", ".webm", ".avi"
         );
 
         for (String ext : mediaExtensions) {
-            if (lowerFileName.endsWith(ext)) {
-                return true;
-            }
+            if (lowerFileName.endsWith(ext)) return true;
         }
         return false;
     }
 
+    private int getIconForFileType(String fileName) {
+        if (fileName == null) return android.R.drawable.ic_menu_info_details;
+        String lower = fileName.toLowerCase();
+        
+        if (lower.endsWith(".doc") || lower.endsWith(".docx")) return android.R.drawable.ic_menu_save;
+        if (lower.endsWith(".xls") || lower.endsWith(".xlsx")) return android.R.drawable.ic_menu_agenda;
+        if (lower.endsWith(".ppt") || lower.endsWith(".pptx")) return android.R.drawable.ic_menu_slideshow;
+        if (lower.endsWith(".pdf")) return android.R.drawable.ic_menu_view;
+        if (lower.endsWith(".txt") || lower.endsWith(".rtf") || lower.endsWith(".log")) return android.R.drawable.ic_menu_view;
+        if (lower.endsWith(".zip") || lower.endsWith(".rar") || lower.endsWith(".7z")) return android.R.drawable.ic_menu_set_as;
+        if (lower.endsWith(".mp3") || lower.endsWith(".wav") || lower.endsWith(".ogg")) return android.R.drawable.ic_media_play;
+        if (isMediaFile(fileName)) return android.R.drawable.ic_menu_gallery;
+        
+        return android.R.drawable.ic_menu_info_details;
+    }
 
-    private Bitmap createThumbnail(SearchResult item) {
+    // --- RESTORED METHODS FOR PDF/APK LOGIC ---
+
+    private Bitmap createSpecialThumbnail(SearchResult item) {
         Uri uri = item.getUri();
         String displayName = item.getDisplayName();
+        if (displayName == null) return null;
+        String lower = displayName.toLowerCase();
 
-        if (displayName == null) {
-            return null;
-        }
-        String lowerDisplayName = displayName.toLowerCase();
-
-        if (lowerDisplayName.endsWith(".apk")) {
+        if (lower.endsWith(".apk")) {
             String path = "file".equals(uri.getScheme()) ? uri.getPath() : null;
             if (path != null) return getApkIcon(path);
         }
-        if (lowerDisplayName.endsWith(".pdf")) {
+        if (lower.endsWith(".pdf")) {
             return createPdfThumbnail(uri);
         }
-
-        try {
-            Bitmap bitmap = null;
-            if ("content".equals(uri.getScheme())) {
-                String mimeType = context.getContentResolver().getType(uri);
-                if (mimeType != null) {
-                    if (mimeType.startsWith("image/")) {
-                        bitmap = MediaStore.Images.Thumbnails.getThumbnail(
-                            context.getContentResolver(), item.getMediaStoreId(),
-                            MediaStore.Images.Thumbnails.MINI_KIND, null);
-                    } else if (mimeType.startsWith("video/")) {
-                        bitmap = MediaStore.Video.Thumbnails.getThumbnail(
-                            context.getContentResolver(), item.getMediaStoreId(),
-                            MediaStore.Video.Thumbnails.MINI_KIND, null);
-                    }
-                }
-            } else if ("file".equals(uri.getScheme()) && uri.getPath() != null) {
-                String path = uri.getPath();
-                MediaMetadataRetriever retriever = new MediaMetadataRetriever();
-                try {
-                    retriever.setDataSource(path);
-                    bitmap = retriever.getFrameAtTime(1000000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
-                } catch (Exception e) {
-                    // Fallback to image decoding
-                } finally {
-                    retriever.release();
-                }
-
-                if (bitmap == null) {
-                    BitmapFactory.Options options = new BitmapFactory.Options();
-                    options.inJustDecodeBounds = true;
-                    BitmapFactory.decodeFile(path, options);
-                    options.inSampleSize = calculateInSampleSize(options, 150, 150);
-                    options.inJustDecodeBounds = false;
-                    bitmap = BitmapFactory.decodeFile(path, options);
-                }
-            }
-
-            if (bitmap != null) {
-                return bitmap;
-            }
-
-        } catch (Exception e) {
-            Log.e("MassDeleteAdapter", "Could not create thumbnail for URI: " + item.getUri(), e);
-        }
         return null;
-    }
-
-    private int getIconForFileType(String fileName) {
-        if (fileName == null) {
-            return android.R.drawable.ic_menu_info_details;
-        }
-        String lowerFileName = fileName.toLowerCase();
-        if (lowerFileName.endsWith(".doc") || lowerFileName.endsWith(".docx")) return android.R.drawable.ic_menu_save;
-        if (lowerFileName.endsWith(".xls") || lowerFileName.endsWith(".xlsx")) return android.R.drawable.ic_menu_agenda;
-        if (lowerFileName.endsWith(".ppt") || lowerFileName.endsWith(".pptx")) return android.R.drawable.ic_menu_slideshow;
-        if (lowerFileName.endsWith(".txt") || lowerFileName.endsWith(".rtf") || lowerFileName.endsWith(".log")) return android.R.drawable.ic_menu_view;
-        if (lowerFileName.endsWith(".html") || lowerFileName.endsWith(".xml") || lowerFileName.endsWith(".js") || lowerFileName.endsWith(".css") || lowerFileName.endsWith(".java") || lowerFileName.endsWith(".py") || lowerFileName.endsWith(".c") || lowerFileName.endsWith(".cpp") || lowerFileName.endsWith(".php")) return android.R.drawable.ic_menu_edit;
-        if (lowerFileName.endsWith(".zip") || lowerFileName.endsWith(".rar") || lowerFileName.endsWith(".7z") || lowerFileName.endsWith(".tar") || lowerFileName.endsWith(".gz")) return android.R.drawable.ic_menu_set_as;
-        if (lowerFileName.endsWith(".exe") || lowerFileName.endsWith(".msi")) return android.R.drawable.ic_dialog_dialer;
-        if (lowerFileName.endsWith(".mp3") || lowerFileName.endsWith(".wav") || lowerFileName.endsWith(".ogg") || lowerFileName.endsWith(".m4a")) return android.R.drawable.ic_media_play;
-        return android.R.drawable.ic_menu_info_details;
     }
 
     private Bitmap getApkIcon(String filePath) {
@@ -238,11 +192,11 @@ public class MassDeleteAdapter extends RecyclerView.Adapter<MassDeleteAdapter.It
             Log.e("MassDeleteAdapter", "Could not render PDF thumbnail", e);
             return null;
         } finally {
-            if (page != null) page.close();
-            if (renderer != null) renderer.close();
-            if (pfd != null) {
-                try { pfd.close(); } catch (IOException e) { /* ignore */ }
-            }
+            try {
+                if (page != null) page.close();
+                if (renderer != null) renderer.close();
+                if (pfd != null) pfd.close();
+            } catch (IOException ignored) {}
         }
     }
 
@@ -250,30 +204,13 @@ public class MassDeleteAdapter extends RecyclerView.Adapter<MassDeleteAdapter.It
         if (drawable instanceof BitmapDrawable) {
             return ((BitmapDrawable) drawable).getBitmap();
         }
-        int width = drawable.getIntrinsicWidth();
-        width = width > 0 ? width : 96;
-        int height = drawable.getIntrinsicHeight();
-        height = height > 0 ? height : 96;
+        int width = drawable.getIntrinsicWidth() > 0 ? drawable.getIntrinsicWidth() : 96;
+        int height = drawable.getIntrinsicHeight() > 0 ? drawable.getIntrinsicHeight() : 96;
         Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(bitmap);
         drawable.setBounds(0, 0, canvas.getWidth(), canvas.getHeight());
         drawable.draw(canvas);
         return bitmap;
-    }
-
-    private int calculateInSampleSize(BitmapFactory.Options options, int reqWidth, int reqHeight) {
-        final int height = options.outHeight;
-        final int width = options.outWidth;
-        int inSampleSize = 1;
-
-        if (height > reqHeight || width > reqWidth) {
-            final int halfHeight = height / 2;
-            final int halfWidth = width / 2;
-            while ((halfHeight / inSampleSize) >= reqHeight && (halfWidth / inSampleSize) >= reqWidth) {
-                inSampleSize *= 2;
-            }
-        }
-        return inSampleSize;
     }
 
     @Override
@@ -286,19 +223,18 @@ public class MassDeleteAdapter extends RecyclerView.Adapter<MassDeleteAdapter.It
         notifyDataSetChanged();
     }
 
-    // MODIFIED: ViewHolder now holds a reference to the new TextView
     public static class ItemViewHolder extends RecyclerView.ViewHolder {
         ImageView thumbnailImage;
         TextView indexNumber;
         View exclusionOverlay;
-        TextView fileNameText; // NEW
+        TextView fileNameText;
 
         public ItemViewHolder(@NonNull View itemView) {
             super(itemView);
             thumbnailImage = itemView.findViewById(R.id.thumbnail_image);
             indexNumber = itemView.findViewById(R.id.index_number);
             exclusionOverlay = itemView.findViewById(R.id.exclusion_overlay);
-            fileNameText = itemView.findViewById(R.id.file_name_text); // NEW
+            fileNameText = itemView.findViewById(R.id.file_name_text);
         }
     }
 
@@ -321,4 +257,3 @@ public class MassDeleteAdapter extends RecyclerView.Adapter<MassDeleteAdapter.It
         public void setExcluded(boolean excluded) { isExcluded = excluded; }
     }
 }
-
