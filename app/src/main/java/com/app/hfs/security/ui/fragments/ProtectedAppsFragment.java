@@ -29,9 +29,9 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Screen for Protected App Selection (Phase 1, Step 2).
- * Allows users to choose which installed apps HFS should monitor.
- * Logic: Fetches installed apps -> Cross-references with DB -> Displays with Toggle.
+ * Screen for Protected App Selection.
+ * FIXED: Added checks to prevent "Not attached to a context" crash when 
+ * switching to the Dashboard while the app list is still loading.
  */
 public class ProtectedAppsFragment extends Fragment implements AppSelectionAdapter.OnAppSelectionListener {
 
@@ -40,13 +40,12 @@ public class ProtectedAppsFragment extends Fragment implements AppSelectionAdapt
     private List<AppInfo> fullAppList;
     private HFSDatabaseHelper db;
     
-    // Executor for background processing to prevent UI freezing during app list fetch
+    // Executor for background processing
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
     @Nullable
     @Override
     public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container, @Nullable Bundle savedInstanceState) {
-        // Initialize ViewBinding for the protected apps selection layout
         binding = FragmentProtectedAppsBinding.inflate(inflater, container, false);
         return binding.getRoot();
     }
@@ -67,14 +66,10 @@ public class ProtectedAppsFragment extends Fragment implements AppSelectionAdapt
 
     private void setupRecyclerView() {
         binding.rvApps.setLayoutManager(new LinearLayoutManager(requireContext()));
-        // Initialize adapter with empty list and the click listener
         adapter = new AppSelectionAdapter(new ArrayList<>(), this);
         binding.rvApps.setAdapter(adapter);
     }
 
-    /**
-     * Logic for searching/filtering the app list.
-     */
     private void setupSearch() {
         binding.etSearchApps.addTextChangedListener(new TextWatcher() {
             @Override
@@ -91,25 +86,25 @@ public class ProtectedAppsFragment extends Fragment implements AppSelectionAdapt
     }
 
     /**
-     * Scans the device for installed applications.
-     * Filters out system components that have no launcher icon.
+     * Logic: Scans the device for apps.
+     * FIX: Uses isAdded() to prevent background crashes during tab switching.
      */
     private void loadInstalledApps() {
         binding.progressBar.setVisibility(View.VISIBLE);
         
         executor.execute(() -> {
-            PackageManager pm = requireContext().getPackageManager();
+            // CRITICAL CHECK: Ensure fragment is still active before starting work
+            if (!isAdded() || getContext() == null) return;
+
+            PackageManager pm = getContext().getPackageManager();
             List<ApplicationInfo> packages = pm.getInstalledApplications(PackageManager.GET_META_DATA);
             List<AppInfo> tempInfoList = new ArrayList<>();
             
-            // Get currently protected packages from local database
             Set<String> savedProtectedPackages = db.getProtectedPackages();
 
             for (ApplicationInfo app : packages) {
-                // Filter: Only show apps that the user can actually launch (Gallery, WhatsApp, etc.)
                 if (pm.getLaunchIntentForPackage(app.packageName) != null) {
-                    // Skip our own app from the list
-                    if (app.packageName.equals(requireContext().getPackageName())) continue;
+                    if (app.packageName.equals(getContext().getPackageName())) continue;
 
                     String name = app.loadLabel(pm).toString();
                     Drawable icon = app.loadIcon(pm);
@@ -119,28 +114,28 @@ public class ProtectedAppsFragment extends Fragment implements AppSelectionAdapt
                 }
             }
 
-            // Sort apps alphabetically for better User Experience
             Collections.sort(tempInfoList, (a, b) -> a.getAppName().compareToIgnoreCase(b.getAppName()));
 
-            // Return results to the main UI thread
-            if (getActivity() != null) {
+            // CRITICAL FIX: Verify fragment state before touching the UI thread
+            if (getActivity() != null && isAdded()) {
                 getActivity().runOnUiThread(() -> {
-                    fullAppList = tempInfoList;
-                    adapter.updateList(fullAppList);
-                    binding.progressBar.setVisibility(View.GONE);
-                    
-                    if (fullAppList.isEmpty()) {
-                        binding.tvNoAppsFound.setVisibility(View.VISIBLE);
+                    // Final check to ensure binding is still valid
+                    if (binding != null) {
+                        fullAppList = tempInfoList;
+                        adapter.updateList(fullAppList);
+                        binding.progressBar.setVisibility(View.GONE);
+                        
+                        if (fullAppList.isEmpty()) {
+                            binding.tvNoAppsFound.setVisibility(View.VISIBLE);
+                        }
                     }
                 });
             }
         });
     }
 
-    /**
-     * Simple filtering logic based on the app name or package string.
-     */
     private void filterApps(String query) {
+        if (fullAppList == null) return;
         List<AppInfo> filtered = new ArrayList<>();
         for (AppInfo info : fullAppList) {
             if (info.getAppName().toLowerCase().contains(query.toLowerCase()) ||
@@ -151,10 +146,6 @@ public class ProtectedAppsFragment extends Fragment implements AppSelectionAdapt
         adapter.updateList(filtered);
     }
 
-    /**
-     * Interface callback: Triggered whenever a checkbox in the list is toggled.
-     * Updates the local database set immediately to ensure the Monitor Service stays updated.
-     */
     @Override
     public void onAppToggle(String packageName, boolean isSelected) {
         Set<String> currentProtectedSet = new HashSet<>(db.getProtectedPackages());
@@ -165,12 +156,13 @@ public class ProtectedAppsFragment extends Fragment implements AppSelectionAdapt
             currentProtectedSet.remove(packageName);
         }
         
-        // Save the updated list to SharedPreferences/DB
         db.saveProtectedPackages(currentProtectedSet);
     }
 
     @Override
     public void onDestroyView() {
+        // Shutdown the executor when fragment is destroyed to stop background tasks
+        executor.shutdownNow();
         super.onDestroyView();
         binding = null;
     }
