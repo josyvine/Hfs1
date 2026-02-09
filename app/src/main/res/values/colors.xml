@@ -1,43 +1,37 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Light Theme Colors -->
-    <color name="lt_colorPrimary">#6200EE</color>
-    <color name="lt_colorPrimaryDark">#3700B3</color>
-    <color name="lt_colorAccent">#03DAC5</color>
-    <color name="lt_backgroundColor">#FFFFFF</color>
-    <color name="lt_textColor">#000000</color>
-    <color name="lt_headerTextColor">#FFFFFF</color>
+    <!-- Base App Theme Colors -->
+    <color name="purple_200">#FFBB86FC</color>
+    <color name="purple_500">#FF6200EE</color>
+    <color name="purple_700">#FF3700B3</color>
+    <color name="teal_200">#FF03DAC5</color>
+    <color name="teal_700">#FF018786</color>
+    
+    <!-- HFS Branding Palette (Phase 10 UI) -->
+    
+    <!-- Dark Mode Core Backgrounds -->
+    <color name="hfs_background_dark">#0F111A</color> <!-- Deep Midnight Blue/Black -->
+    <color name="hfs_surface_dark">#1A1D29</color>    <!-- Slightly lighter for cards -->
+    
+    <!-- Primary Branding Color -->
+    <color name="hfs_primary_blue">#3D8BFF</color>    <!-- Electric Security Blue -->
+    <color name="hfs_primary_dark">#2456A5</color>    <!-- Darker Blue for Press States -->
 
-    <!-- Dark Theme Colors -->
-    <color name="dt_colorPrimary">#333742</color>
-    <color name="dt_colorPrimaryDark">#232732</color>
-    <color name="dt_colorAccent">#7986CB</color>
-    <color name="dt_backgroundColor">#121212</color>
-    <color name="dt_textColor">#EAEAEA</color>
-    <color name="dt_headerTextColor">#EAEAEA</color>
+    <!-- Status Colors -->
+    <color name="hfs_active_green">#00E676</color>    <!-- Bright Neon Green for "Active" -->
+    <color name="hfs_inactive_red">#FF5252</color>    <!-- Bright Red for "Alert/Inactive" -->
+    <color name="hfs_warning_orange">#FFAB40</color>  <!-- Orange for warnings -->
 
-    <!-- AMOLED Theme Colors -->
-    <color name="amoled_colorPrimary">#1F1F1F</color>
-    <color name="amoled_colorPrimaryDark">#000000</color>
-    <color name="amoled_colorAccent">#BB86FC</color>
-    <color name="amoled_backgroundColor">#000000</color>
-    <color name="amoled_textColor">#E1E1E1</color>
-    <color name="amoled_headerTextColor">#E1E1E1</color>
+    <!-- Neutral Colors -->
+    <color name="white">#FFFFFFFF</color>
+    <color name="black">#FF000000</color>
+    <color name="gray_text">#949BA5</color>
+    <color name="divider_color">#2C3142</color>
 
-    <!-- Nordic Theme Colors -->
-    <color name="nordic_colorPrimary">#4C566A</color>
-    <color name="nordic_colorPrimaryDark">#2E3440</color>
-    <color name="nordic_colorAccent">#88C0D0</color>
-    <color name="nordic_backgroundColor">#D8DEE9</color>
-    <color name="nordic_textColor">#2E3440</color>
-    <color name="nordic_headerTextColor">#ECEFF4</color>
+    <!-- Navigation Colors -->
+    <color name="nav_selected">#3D8BFF</color>
+    <color name="nav_unselected">#6B7280</color>
 
-    <!-- Solarized Theme Colors -->
-    <color name="solarized_colorPrimary">#073642</color>
-    <color name="solarized_colorPrimaryDark">#002b36</color>
-    <color name="solarized_colorAccent">#268bd2</color>
-    <color name="solarized_backgroundColor">#fdf6e3</color>
-    <color name="solarized_textColor">#586e75</color>
-    <color name="solarized_headerTextColor">#eee8d5</color>
+    <!-- Overlay Colors -->
+    <color name="overlay_background">#E60F111A</color> <!-- Semi-transparent version of BG -->
 </resources>
-
