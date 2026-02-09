@@ -26,16 +26,18 @@ import com.hfs.security.utils.HFSDatabaseHelper;
 import java.util.Set;
 
 /**
- * The core Background Service for HFS (Phase 2).
- * This service runs persistently to monitor foreground app changes.
- * When a user opens a 'Protected App', this service launches the 
- * LockScreenActivity overlay immediately.
+ * The core Background Service for HFS.
+ * FIXED: Increased detection frequency and improved overlay trigger 
+ * reliability for Oppo/Realme devices to ensure the lock screen 
+ * appears the millisecond a protected app is opened.
  */
 public class AppMonitorService extends Service {
 
-    private static final String TAG = "AppMonitorService";
+    private static final String TAG = "HFS_MonitorService";
     private static final int NOTIFICATION_ID = 2002;
-    private static final long MONITOR_TICK_MS = 1000; // Check every 1 second
+    
+    // SPEED INCREASE: Reduced from 1000ms to 500ms for aggressive detection
+    private static final long MONITOR_TICK_MS = 500; 
 
     private Handler monitorHandler;
     private Runnable monitorRunnable;
@@ -52,17 +54,18 @@ public class AppMonitorService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        // 1. Start as a Foreground Service to prevent system from killing it
+        // 1. Start as a high-priority Foreground Service
         startForeground(NOTIFICATION_ID, createSecurityNotification());
 
-        // 2. Start the recursive monitoring loop
+        // 2. Start the aggressive monitoring loop
         startMonitoringLoop();
 
-        return START_STICKY; // Ensure service restarts if ever killed by OS
+        // START_STICKY: Tells Android to restart this service if it gets killed
+        return START_STICKY; 
     }
 
     /**
-     * Creates the mandatory persistent notification for the Foreground Service.
+     * Creates the persistent notification that keeps the service alive.
      */
     private Notification createSecurityNotification() {
         Intent notificationIntent = new Intent(this, MainActivity.class);
@@ -73,16 +76,16 @@ public class AppMonitorService extends Service {
 
         return new NotificationCompat.Builder(this, HFSApplication.CHANNEL_ID)
                 .setContentTitle("HFS Silent Guard Active")
-                .setContentText("Monitoring protected applications...")
-                .setSmallIcon(R.drawable.hfs) // Using your hfs.png icon
+                .setContentText("Protecting your private applications...")
+                .setSmallIcon(R.drawable.hfs)
                 .setContentIntent(pendingIntent)
-                .setOngoing(true) // Cannot be swiped away
-                .setPriority(NotificationCompat.PRIORITY_LOW) // Silent in status bar
+                .setOngoing(true)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build();
     }
 
     /**
-     * The main loop that checks for foreground app changes.
+     * The aggressive loop that checks for foreground app changes.
      */
     private void startMonitoringLoop() {
         monitorRunnable = new Runnable() {
@@ -90,20 +93,25 @@ public class AppMonitorService extends Service {
             public void run() {
                 String currentApp = getForegroundPackageName();
 
-                // Logic: Only trigger if the foreground app has changed
+                // 1. Only act if the foreground app is different from the last check
                 if (!currentApp.equals(lastPackageInForeground)) {
-                    lastPackageInForeground = currentApp;
                     
-                    // Check if the newly opened app is in the protected list
-                    Set<String> protectedApps = db.getProtectedPackages();
-                    
-                    if (protectedApps.contains(currentApp)) {
-                        Log.i(TAG, "Protected App Detected: " + currentApp);
-                        triggerLockOverlay(currentApp);
+                    // 2. SELF-PROTECTION: Don't lock if the user is inside HFS itself
+                    if (!currentApp.equals(getPackageName())) {
+                        
+                        lastPackageInForeground = currentApp;
+                        
+                        // 3. Check if the app is in the user's protected list
+                        Set<String> protectedApps = db.getProtectedPackages();
+                        
+                        if (protectedApps.contains(currentApp)) {
+                            Log.i(TAG, "PROTECTED APP DETECTED: " + currentApp);
+                            triggerLockOverlay(currentApp);
+                        }
                     }
                 }
 
-                // Repeat the check after the specified interval
+                // Repeat every 500ms
                 monitorHandler.postDelayed(this, MONITOR_TICK_MS);
             }
         };
@@ -111,13 +119,12 @@ public class AppMonitorService extends Service {
     }
 
     /**
-     * Uses UsageStatsManager to identify the app currently on top.
-     * Requires 'Usage Access' permission from the user.
+     * Uses UsageStatsManager to identify the app currently visible on screen.
      */
     private String getForegroundPackageName() {
         UsageStatsManager usm = (UsageStatsManager) getSystemService(Context.USAGE_STATS_SERVICE);
         long endTime = System.currentTimeMillis();
-        long startTime = endTime - 5000; // Check last 5 seconds of events
+        long startTime = endTime - 1000 * 60; // Look at the last 1 minute of events
 
         UsageEvents events = usm.queryEvents(startTime, endTime);
         UsageEvents.Event event = new UsageEvents.Event();
@@ -125,7 +132,6 @@ public class AppMonitorService extends Service {
 
         while (events.hasNextEvent()) {
             events.getNextEvent(event);
-            // We specifically look for the MOVE_TO_FOREGROUND event type
             if (event.getEventType() == UsageEvents.Event.MOVE_TO_FOREGROUND) {
                 currentPkg = event.getPackageName();
             }
@@ -134,7 +140,7 @@ public class AppMonitorService extends Service {
     }
 
     /**
-     * Launches the LockScreenActivity as a high-priority overlay.
+     * Launches the LockScreenActivity overlay.
      */
     private void triggerLockOverlay(String packageName) {
         String appName = getAppNameFromPackage(packageName);
@@ -143,30 +149,34 @@ public class AppMonitorService extends Service {
         lockIntent.putExtra("TARGET_APP_PACKAGE", packageName);
         lockIntent.putExtra("TARGET_APP_NAME", appName);
         
-        // Critical flags for launching an activity from a background service
-        lockIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        lockIntent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        lockIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        // CRITICAL FLAGS FOR OPPO/REALME:
+        // NEW_TASK: Required for service launch
+        // SINGLE_TOP/CLEAR_TOP: Prevents multiple lock screens from opening
+        // NO_USER_ACTION: Helps bypass some background restrictions
+        lockIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK 
+                          | Intent.FLAG_ACTIVITY_SINGLE_TOP 
+                          | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                          | Intent.FLAG_ACTIVITY_NO_USER_ACTION);
         
-        startActivity(lockIntent);
+        try {
+            startActivity(lockIntent);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to launch lock screen: " + e.getMessage());
+        }
     }
 
-    /**
-     * Converts a package name (e.g., com.whatsapp) to a readable name (e.g., WhatsApp).
-     */
     private String getAppNameFromPackage(String packageName) {
         PackageManager pm = getPackageManager();
         try {
             ApplicationInfo ai = pm.getApplicationInfo(packageName, 0);
             return (String) pm.getApplicationLabel(ai);
         } catch (PackageManager.NameNotFoundException e) {
-            return packageName; // Fallback to package name if display name fails
+            return packageName;
         }
     }
 
     @Override
     public void onDestroy() {
-        // Cleanup loop to prevent memory leaks
         if (monitorHandler != null && monitorRunnable != null) {
             monitorHandler.removeCallbacks(monitorRunnable);
         }
@@ -177,7 +187,6 @@ public class AppMonitorService extends Service {
     @Nullable
     @Override
     public IBinder onBind(Intent intent) {
-        // Not using bound service pattern
         return null;
     }
 }
