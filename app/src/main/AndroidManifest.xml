@@ -1,14 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
-    package="com.hfs.security">
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- PERMISSIONS FOR SILENT INTRUDER DETECTION -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" />
     <uses-feature android:name="android.hardware.camera.front" />
 
-    <!-- PERMISSION FOR FINGERPRINT/BIOMETRIC UNLOCK (NEWLY ADDED) -->
+    <!-- PERMISSION FOR FINGERPRINT/BIOMETRIC UNLOCK -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
 
     <!-- PERMISSIONS FOR APP MONITORING & OVERLAY LOCK -->
@@ -63,7 +62,7 @@
             android:excludeFromRecents="true"
             android:launchMode="singleInstance"
             android:noHistory="true"
-            android:theme="@style/Theme.HFS.NoActionBar"
+            android:theme="@style/Theme.HFS.LockOverlay"
             android:windowSoftInputMode="stateAlwaysHidden" />
 
         <!-- 4. BACKGROUND MONITORING SERVICE -->
