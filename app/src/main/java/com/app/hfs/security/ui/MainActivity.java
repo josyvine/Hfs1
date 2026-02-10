@@ -31,9 +31,9 @@ import com.hfs.security.utils.HFSDatabaseHelper;
 /**
  * The Primary Host Activity for HFS Security.
  * FIXED: 
- * 1. Resolved Dashboard crash by implementing ReselectedListener.
- * 2. Added Outgoing Call permissions required for Oppo Dialer fix.
- * 3. Stabilized Navigation Controller state.
+ * 1. Resolved Dashboard re-selection crash.
+ * 2. Added Runtime Permissions for Dialer/Call interception (Oppo Fix).
+ * 3. Stabilized Navigation Controller and Toolbar integration.
  */
 public class MainActivity extends AppCompatActivity {
 
@@ -45,47 +45,55 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Initialize ViewBinding
+        // 1. Initialize ViewBinding
         binding = ActivityMainBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
 
         db = HFSDatabaseHelper.getInstance(this);
 
-        // Setup custom Toolbar
+        // 2. Setup custom Toolbar
+        // Parent theme in themes.xml is already set to NoActionBar to prevent crash
         setSupportActionBar(binding.toolbar);
 
-        // Setup Navigation Component
+        // 3. Initialize Navigation Component
         NavHostFragment navHostFragment = (NavHostFragment) getSupportFragmentManager()
                 .findFragmentById(R.id.nav_host_fragment);
         
         if (navHostFragment != null) {
             navController = navHostFragment.getNavController();
 
-            // Define top-level tabs
+            // Define top-level destinations (Dashboard, Apps, Evidence)
             AppBarConfiguration appBarConfiguration = new AppBarConfiguration.Builder(
                     R.id.nav_home, 
                     R.id.nav_protected_apps, 
                     R.id.nav_history)
                     .build();
 
-            // Connect NavController to UI components
+            // Link NavController to Toolbar and Bottom Navigation
             NavigationUI.setupActionBarWithNavController(this, navController, appBarConfiguration);
             NavigationUI.setupWithNavController(binding.bottomNav, navController);
             
             // FIX FOR DASHBOARD CRASH:
-            // This prevents the system from trying to reload the fragment 
-            // if the user clicks the icon of the tab they are already viewing.
+            // Prevents the Navigation component from trying to re-load the current 
+            // fragment if the user taps the icon of the tab they are already viewing.
             binding.bottomNav.setOnItemReselectedListener(item -> {
-                // Do nothing on reselect to maintain stability
+                // Do nothing on re-selection to maintain fragment stability
             });
         }
 
-        // Check for required security permissions
+        // 4. Check for and request all high-security permissions
         checkAllSecurityPermissions();
+
+        // 5. Handle Setup redirection if necessary
+        if (getIntent().getBooleanExtra("SHOW_SETUP", false)) {
+            if (!db.isSetupComplete()) {
+                startActivity(new Intent(this, FaceSetupActivity.class));
+            }
+        }
     }
 
     /**
-     * Creates the top-right options menu.
+     * Creates the options menu (3-dot menu).
      */
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
@@ -94,7 +102,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * Handles selection of menu items (Settings and Help).
+     * Handles menu item clicks (Settings, Help).
      */
     @Override
     public boolean onOptionsItemSelected(@NonNull MenuItem item) {
@@ -112,11 +120,19 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * Checks for the 6 critical permissions required for HFS.
-     * UPDATED: Now includes Phone/Dialer permissions for Oppo stability.
+     * Handles back-button navigation within the fragment stack.
+     */
+    @Override
+    public boolean onSupportNavigateUp() {
+        return navController.navigateUp() || super.onSupportNavigateUp();
+    }
+
+    /**
+     * Verifies the 6 critical permissions required for HFS Security.
+     * UPDATED: Now includes mandatory Dialer and Phone State permissions for Oppo stability.
      */
     private void checkAllSecurityPermissions() {
-        // List of core runtime permissions
+        // List of mandatory runtime permissions
         String[] permissions = {
                 Manifest.permission.CAMERA,
                 Manifest.permission.SEND_SMS,
@@ -125,7 +141,7 @@ public class MainActivity extends AppCompatActivity {
                 Manifest.permission.PROCESS_OUTGOING_CALLS
         };
 
-        // Add Notification permission for Android 13+
+        // Handle Android 13+ Notification permission
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) 
                     != PackageManager.PERMISSION_GRANTED) {
@@ -134,34 +150,38 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        // Verify core permissions
-        boolean permissionMissing = false;
+        // Check if any runtime permission is currently missing
+        boolean needsRequest = false;
         for (String perm : permissions) {
             if (ContextCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
-                permissionMissing = true;
+                needsRequest = true;
                 break;
             }
         }
 
-        if (permissionMissing) {
+        // Request missing runtime permissions
+        if (needsRequest) {
             ActivityCompat.requestPermissions(this, permissions, 101);
         }
 
-        // Check for System Overlay (Crucial for Lock Screen Activity)
+        // Check for System Overlay Permission (For the App Lock Screen)
         if (!Settings.canDrawOverlays(this)) {
-            showPermissionDialog("Overlay Permission Required", 
-                    "HFS needs to draw over other apps to lock them. Please enable this in settings.",
+            showPermissionExplanation("Overlay Permission Required", 
+                    "HFS needs 'Draw Over Other Apps' permission to block access to protected applications.",
                     new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName())));
         }
 
-        // Check for Usage Stats (Crucial for App Launch Detection)
+        // Check for Usage Stats Permission (For App Launch Detection)
         if (!hasUsageStatsPermission()) {
-            showPermissionDialog("Usage Access Required", 
-                    "HFS needs Usage Access to detect when protected apps are opened.",
+            showPermissionExplanation("Usage Access Required", 
+                    "HFS needs 'Usage Access' to monitor when private apps are being opened.",
                     new Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS));
         }
     }
 
+    /**
+     * Checks if the app has been granted access to Usage Statistics.
+     */
     private boolean hasUsageStatsPermission() {
         AppOpsManager appOps = (AppOpsManager) getSystemService(Context.APP_OPS_SERVICE);
         int mode = appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, 
@@ -169,29 +189,27 @@ public class MainActivity extends AppCompatActivity {
         return mode == AppOpsManager.MODE_ALLOWED;
     }
 
-    private void showPermissionDialog(String title, String message, Intent intent) {
+    /**
+     * Displays a dialog explaining why a special permission is needed.
+     */
+    private void showPermissionExplanation(String title, String message, Intent intent) {
         new AlertDialog.Builder(this)
                 .setTitle(title)
                 .setMessage(message)
                 .setCancelable(false)
-                .setPositiveButton("Go to Settings", (dialog, which) -> startActivity(intent))
-                .setNegativeButton("Exit App", (dialog, which) -> finish())
+                .setPositiveButton("Grant Access", (dialog, which) -> startActivity(intent))
+                .setNegativeButton("Exit", (dialog, which) -> finish())
                 .show();
     }
 
     private void showHelpDialog() {
         new AlertDialog.Builder(this)
                 .setTitle("HFS Security Help")
-                .setMessage("1. Register your face in Settings.\n\n" +
-                           "2. Select apps to protect in 'Apps' tab.\n\n" +
-                           "3. Setup your Trusted Number for alerts.\n\n" +
-                           "4. If Stealth Mode is on, dial your PIN and press CALL to open the app.")
+                .setMessage("1. Go to Settings and perform 'Rescan' to save your face identity.\n\n" +
+                           "2. Select Gallery/Files in the 'Apps' tab.\n\n" +
+                           "3. Setup your Trusted Phone number.\n\n" +
+                           "4. To open HFS if hidden: Dial your PIN and press the Call button.")
                 .setPositiveButton("Got it", null)
                 .show();
-    }
-
-    @Override
-    public boolean onSupportNavigateUp() {
-        return navController.navigateUp() || super.onSupportNavigateUp();
     }
 }
