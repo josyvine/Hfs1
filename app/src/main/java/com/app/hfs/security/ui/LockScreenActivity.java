@@ -31,6 +31,8 @@ import com.hfs.security.utils.HFSDatabaseHelper;
 import com.hfs.security.utils.LocationHelper;
 import com.hfs.security.utils.SmsHelper;
 
+import com.google.android.gms.location.FusedLocationProviderClient;
+import com.google.android.gms.location.LocationServices;
 import com.google.common.util.concurrent.ListenableFuture;
 
 import java.util.concurrent.ExecutionException;
@@ -39,13 +41,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * The Security Overlay Activity (Lock Screen).
+ * The Security Overlay Activity.
  * FIXED: 
- * 1. Java Error: Resolved 'effectively final' variable error in GPS alert logic.
- * 2. Biometric Accuracy: Rejects intruders based on strict landmark proportions.
- * 3. GPS Integration: Fetches Google Maps link for intruder alerts.
- * 4. Loop Killer: Calls AppMonitorService to stop infinite locking via Session Grace.
- * 5. Fingerprint Fail Alert: Detects wrong finger on sensor and alerts owner.
+ * 1. Corrected Session Handshake: Signals the Service to prevent the infinite loop.
+ * 2. Strict Re-Arm: Works with AppMonitorService to ensure lock triggers every time.
+ * 3. Diagnostics: Shows the Java Error Popup if identity verification fails.
  */
 public class LockScreenActivity extends AppCompatActivity {
 
@@ -55,6 +55,7 @@ public class LockScreenActivity extends AppCompatActivity {
     private FaceAuthHelper faceAuthHelper;
     private HFSDatabaseHelper db;
     private String targetPackage;
+    private FusedLocationProviderClient fusedLocationClient;
     
     private boolean isActionTaken = false;
     private boolean isProcessing = false;
@@ -68,7 +69,7 @@ public class LockScreenActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Security Window Flags for Oppo/Realme Overlay priority
+        // Security Window Flags for high-priority overlay
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
                 | WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
                 | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
@@ -80,7 +81,9 @@ public class LockScreenActivity extends AppCompatActivity {
         db = HFSDatabaseHelper.getInstance(this);
         faceAuthHelper = new FaceAuthHelper(this);
         cameraExecutor = Executors.newSingleThreadExecutor();
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this);
         
+        // Retrieve the package name currently being locked
         targetPackage = getIntent().getStringExtra("TARGET_APP_PACKAGE");
 
         binding.lockContainer.setVisibility(View.GONE);
@@ -89,10 +92,10 @@ public class LockScreenActivity extends AppCompatActivity {
         setupBiometricAuth();
         startInvisibleCamera();
 
-        // 2-Second Verification Watchdog - Forces lock if identity is not verified quickly
+        // 2-Second Verification Watchdog
         watchdogHandler.postDelayed(() -> {
             if (!isActionTaken && !isFinishing()) {
-                showDiagnosticError("java.lang.SecurityException: Identity verification timeout. Landmarks not detected.");
+                showDiagnosticError("java.lang.SecurityException: Identity verification timeout. No biometric data received.");
                 triggerIntruderAlert(null);
             }
         }, 2000);
@@ -108,32 +111,36 @@ public class LockScreenActivity extends AppCompatActivity {
             @Override
             public void onAuthenticationSucceeded(@NonNull BiometricPrompt.AuthenticationResult result) {
                 super.onAuthenticationSucceeded(result);
-                // SUCCESS: Grant access and kill the locking loop
+                // SUCCESS: Proceed to unlock
                 onSecurityVerified();
             }
 
             @Override
             public void onAuthenticationFailed() {
                 super.onAuthenticationFailed();
-                // SENSOR MISMATCH: Potential thief attempt - Trigger alert immediately
-                Log.e(TAG, "Biometric failure on system sensor. Alerting Owner.");
+                // SENSOR MISMATCH: Immediate alert trigger
                 triggerIntruderAlert(null);
             }
         });
 
         promptInfo = new BiometricPrompt.PromptInfo.Builder()
                 .setTitle("HFS Identity Check")
-                .setSubtitle("Confirm identity to access your app")
+                .setSubtitle("Authenticate to access your app")
                 .setNegativeButtonText("Use PIN")
                 .build();
     }
 
+    /**
+     * Logic to grant access and correctly signal the Background Service.
+     */
     private void onSecurityVerified() {
         watchdogHandler.removeCallbacksAndMessages(null);
+        
+        // THE FIX: Notify service that this package is now granted temporary access.
         if (targetPackage != null) {
-            // STOP THE LOOP: Notify service that this package is granted 30s grace
             AppMonitorService.unlockSession(targetPackage);
         }
+        
         finish();
     }
 
@@ -189,7 +196,6 @@ public class LockScreenActivity extends AppCompatActivity {
 
             @Override
             public void onMismatchFound() {
-                // Known intruder - Show error details and lock
                 String diagnostic = faceAuthHelper.getLastDiagnosticInfo();
                 showDiagnosticError(diagnostic);
                 triggerIntruderAlert(imageProxy);
@@ -212,33 +218,26 @@ public class LockScreenActivity extends AppCompatActivity {
             binding.scanningIndicator.setVisibility(View.GONE);
             binding.lockContainer.setVisibility(View.VISIBLE);
 
-            // Secretly save intruder photo locally
             if (imageProxy != null) {
                 FileSecureHelper.saveIntruderCapture(LockScreenActivity.this, imageProxy);
             }
 
-            // Fetch Location and Send External Alert (+91)
+            // Fetch GPS Location and send formatted SMS (+91)
             getGPSAndSendAlert();
             
-            // Re-trigger biometric prompt for the real owner
             biometricPrompt.authenticate(promptInfo);
         });
     }
 
-    /**
-     * FIX: Uses effectively final string to resolve build error.
-     */
     private void getGPSAndSendAlert() {
         String rawAppName = getIntent().getStringExtra("TARGET_APP_NAME");
         if (rawAppName == null) rawAppName = "Protected Files";
         
-        // This 'final' string solves the "referenced from an inner class" error
         final String finalAppName = rawAppName;
 
         LocationHelper.getDeviceLocation(this, new LocationHelper.LocationResultCallback() {
             @Override
             public void onLocationFound(String mapLink) {
-                // Sends alert with Google Maps coordinates and 3-msg cooldown limit
                 SmsHelper.sendAlertSms(LockScreenActivity.this, finalAppName, mapLink);
             }
 
