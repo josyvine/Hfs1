@@ -21,15 +21,16 @@ import java.util.List;
 /**
  * Strict Biometric Verification Engine.
  * FIXED: 
- * 1. Uses mathematical landmark proportions to stop failing for the owner.
- * 2. Implements a 15% tolerance window to handle different angles/lighting.
- * 3. Correctly identifies intruders by comparing facial geometry ratios.
+ * 1. Implemented Landmark Ratio Map diagnostic logging.
+ * 2. Added lastDiagnosticInfo getter to provide data for the Java Error Popup.
+ * 3. Optimized proportions logic with a 15% tolerance window.
  */
 public class FaceAuthHelper {
 
     private static final String TAG = "HFS_FaceAuthHelper";
     private final FaceDetector detector;
     private final HFSDatabaseHelper db;
+    private String lastDiagnosticInfo = "No data captured.";
 
     /**
      * Interface to communicate strict authentication results.
@@ -43,20 +44,24 @@ public class FaceAuthHelper {
     public FaceAuthHelper(Context context) {
         this.db = HFSDatabaseHelper.getInstance(context);
 
-        // Configure ML Kit for maximum accuracy to ensure intruders are caught
         FaceDetectorOptions options = new FaceDetectorOptions.Builder()
                 .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
                 .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
                 .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
-                .setMinFaceSize(0.25f) // Ignore small background faces
+                .setMinFaceSize(0.25f)
                 .build();
 
         this.detector = FaceDetection.getClient(options);
     }
 
     /**
-     * Strictly analyzes a camera frame using biometric proportions.
+     * Returns the technical details of the last match attempt.
+     * Used by LockScreenActivity to show the Java Error Popup.
      */
+    public String getLastDiagnosticInfo() {
+        return lastDiagnosticInfo;
+    }
+
     @SuppressWarnings("UnsafeOptInUsageError")
     public void authenticate(@NonNull ImageProxy imageProxy, @NonNull AuthCallback callback) {
         if (imageProxy.getImage() == null) {
@@ -64,22 +69,18 @@ public class FaceAuthHelper {
             return;
         }
 
-        // Convert CameraX frame to ML Kit InputImage format
         InputImage image = InputImage.fromMediaImage(
                 imageProxy.getImage(), 
                 imageProxy.getImageInfo().getRotationDegrees()
         );
 
-        // Process the frame
         detector.process(image)
                 .addOnSuccessListener(new OnSuccessListener<List<Face>>() {
                     @Override
                     public void onSuccess(List<Face> faces) {
                         if (faces.isEmpty()) {
-                            // No face detected - let the LockScreen watchdog handle timeout
-                            callback.onError("No face in frame");
+                            callback.onError("Searching for landmarks...");
                         } else {
-                            // Face found - perform strict landmark geometry check
                             verifyFaceProportions(faces.get(0), callback);
                         }
                     }
@@ -87,81 +88,66 @@ public class FaceAuthHelper {
                 .addOnFailureListener(new OnFailureListener() {
                     @Override
                     public void onFailure(@NonNull Exception e) {
-                        Log.e(TAG, "Landmark analysis failed: " + e.getMessage());
+                        lastDiagnosticInfo = "ML_KIT_ERROR: " + e.getMessage();
                         callback.onError(e.getMessage());
                     }
                 })
-                .addOnCompleteListener(task -> {
-                    // CRITICAL: Always close imageProxy to prevent camera stream freezing
-                    imageProxy.close();
-                });
+                .addOnCompleteListener(task -> imageProxy.close());
     }
 
     /**
-     * The Core Fix: Compares the ratio of eye-distance to nose-distance.
-     * This proportion is unique to the owner and stable across different frames.
+     * The Diagnostic Logic: Compares mathematical proportions.
      */
     private void verifyFaceProportions(Face face, AuthCallback callback) {
-        // Retrieve the 'Identity Ratio' saved during FaceSetupActivity
         String savedRatioStr = db.getOwnerFaceData();
 
-        if (savedRatioStr == null || savedRatioStr.isEmpty() || savedRatioStr.equals("REGISTERED_OWNER_ID")) {
-            // If the user hasn't calibrated with the new system yet, trigger mismatch
-            Log.w(TAG, "Identity Error: New Landmark calibration required.");
-            callback.onMismatchFound();
-            return;
-        }
-
-        // 1. Extract Live Landmarks
         FaceLandmark leftEye = face.getLandmark(FaceLandmark.LEFT_EYE);
         FaceLandmark rightEye = face.getLandmark(FaceLandmark.RIGHT_EYE);
         FaceLandmark nose = face.getLandmark(FaceLandmark.NOSE_BASE);
 
         if (leftEye == null || rightEye == null || nose == null) {
-            callback.onError("Insufficient features detected");
+            lastDiagnosticInfo = "VISIBILITY_ERROR: Camera cannot see eyes/nose clearly.";
+            callback.onError("Incomplete features");
             return;
         }
 
-        // 2. Calculate Live Biometric Ratio
+        // Calculate distances
         float liveEyeDist = calculateDistance(leftEye.getPosition(), rightEye.getPosition());
         float liveNoseDist = calculateDistance(leftEye.getPosition(), nose.getPosition());
         
         if (liveNoseDist == 0) return;
         float liveRatio = liveEyeDist / liveNoseDist;
 
+        if (savedRatioStr == null || savedRatioStr.isEmpty() || savedRatioStr.equals("REGISTERED_OWNER_ID")) {
+            lastDiagnosticInfo = "DATABASE_ERROR: No Owner Identity Ratio found. Please perform 'Rescan'.";
+            callback.onMismatchFound();
+            return;
+        }
+
         try {
             float savedRatio = Float.parseFloat(savedRatioStr);
-            
-            // 3. Calculate the Difference Percentage
             float difference = Math.abs(liveRatio - savedRatio);
             float diffPercentage = (difference / savedRatio);
 
-            Log.d(TAG, "Biometric Comparison -> Saved: " + savedRatio + " | Live: " + liveRatio + " | Diff: " + (diffPercentage * 100) + "%");
+            // LOG FOR POPUP DIAGNOSTIC
+            lastDiagnosticInfo = String.format("Biometric Trace:\nSaved Ratio: %.2f\nDetected Ratio: %.2f\nVariance: %.1f%%", 
+                    savedRatio, liveRatio, (diffPercentage * 100));
 
-            /* 
-             * THE CALIBRATION FIX: 
-             * We allow a 15% margin of error (0.15f). 
-             * This handles your face correctly while still blocking 
-             * intruders (like Mom) whose facial structure will differ 
-             * by much more than 15% in mathematical proportions.
-             */
+            // 15% tolerance standard
             if (diffPercentage <= 0.15f) {
-                Log.i(TAG, "Identity MATCH confirmed.");
+                Log.i(TAG, "Owner Verified.");
                 callback.onMatchFound();
             } else {
-                Log.w(TAG, "Identity MISMATCH. Intruder detected.");
+                Log.w(TAG, "Mismatch: " + lastDiagnosticInfo);
                 callback.onMismatchFound();
             }
             
         } catch (NumberFormatException e) {
-            // If data is corrupted, force lock for security
+            lastDiagnosticInfo = "DATA_CORRUPTION: Saved ratio format invalid.";
             callback.onMismatchFound();
         }
     }
 
-    /**
-     * Standard Euclidean distance calculation between two points.
-     */
     private float calculateDistance(PointF p1, PointF p2) {
         return (float) Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
     }
