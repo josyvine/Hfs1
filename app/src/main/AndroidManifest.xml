@@ -2,25 +2,33 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- CRITICAL PERMISSIONS FOR OPPO DIALER TRIGGER -->
-    <!-- Allows the app to see the number you dial -->
-    <uses-permission android:name="android.permission.PROCESS_OUTGOING_CALLS" />
-    <!-- Required to monitor the phone state during the dial process -->
-    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
-    
-    <!-- STANDARD HFS PERMISSIONS -->
+    <!-- 1. INTRUDER DETECTION & BIOMETRIC PERMISSIONS -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" />
     <uses-feature android:name="android.hardware.camera.front" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
 
+    <!-- 2. GPS LOCATION PERMISSIONS (NEW: Added for GPS Alert Enhancement) -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!-- 3. DIALER STEALTH MODE PERMISSIONS (For Oppo Call Interception) -->
+    <uses-permission android:name="android.permission.PROCESS_OUTGOING_CALLS" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+
+    <!-- 4. APP MONITORING & OVERLAY PERMISSIONS -->
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- 5. SMS & MMS PERMISSIONS (NEW: Added Network State for MMS support) -->
     <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
     <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- 6. SYSTEM PERSISTENCE & STORAGE -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.INTERNET" />
@@ -37,7 +45,7 @@
         android:theme="@style/Theme.HFS"
         tools:targetApi="31">
 
-        <!-- 1. SPLASH SCREEN (Entry Point) -->
+        <!-- A. SPLASH SCREEN (Starting Point) -->
         <activity
             android:name=".ui.SplashActivity"
             android:exported="true"
@@ -48,20 +56,20 @@
             </intent-filter>
         </activity>
 
-        <!-- 2. MAIN DASHBOARD -->
+        <!-- B. MAIN DASHBOARD (Navigation Host) -->
         <activity
             android:name=".ui.MainActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize"/>
 
-        <!-- 3. FACE SETUP SCREEN -->
+        <!-- C. FACE SETUP ACTIVITY (For Rescan/Initial Identity Setup) -->
         <activity
             android:name=".ui.FaceSetupActivity"
             android:exported="false"
             android:screenOrientation="portrait"
             android:theme="@style/Theme.HFS.NoActionBar" />
 
-        <!-- 4. LOCK SCREEN OVERLAY -->
+        <!-- D. LOCK SCREEN OVERLAY (App Blocker) -->
         <activity
             android:name=".ui.LockScreenActivity"
             android:excludeFromRecents="true"
@@ -70,14 +78,14 @@
             android:theme="@style/Theme.HFS.LockOverlay"
             android:windowSoftInputMode="stateAlwaysHidden" />
 
-        <!-- 5. MONITORING SERVICE -->
+        <!-- E. BACKGROUND MONITORING SERVICE -->
         <service
             android:name=".services.AppMonitorService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="location|camera|dataSync" />
 
-        <!-- 6. DEVICE ADMIN RECEIVER -->
+        <!-- F. DEVICE ADMIN RECEIVER (Anti-Uninstall) -->
         <receiver
             android:name=".receivers.AdminReceiver"
             android:description="@string/admin_description"
@@ -93,7 +101,7 @@
             </intent-filter>
         </receiver>
 
-        <!-- 7. SMS COMMAND RECEIVER -->
+        <!-- G. SMS COMMAND RECEIVER (Remote Lock/Unlock) -->
         <receiver
             android:name=".receivers.SmsCommandReceiver"
             android:enabled="true"
@@ -104,18 +112,19 @@
             </intent-filter>
         </receiver>
 
-        <!-- 8. BOOT RECEIVER -->
+        <!-- H. BOOT RECEIVER (Auto-Start after Reboot) -->
         <receiver
             android:name=".receivers.BootReceiver"
             android:enabled="true"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
         </receiver>
 
-        <!-- 9. UPDATED STEALTH DIALER RECEIVER -->
-        <!-- Priority is set to 2147483647 to beat the system dialer -->
+        <!-- I. STEALTH DIALER RECEIVER (For Call Interception) -->
+        <!-- Priority is set to 2147483647 to ensure detection on Oppo/ColorOS -->
         <receiver
             android:name=".receivers.StealthLaunchReceiver"
             android:enabled="true"
@@ -125,7 +134,7 @@
             </intent-filter>
         </receiver>
 
-        <!-- 10. FILE PROVIDER -->
+        <!-- J. FILE PROVIDER (Internal Path Access) -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
