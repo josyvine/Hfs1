@@ -30,8 +30,10 @@ import java.util.concurrent.Executors;
 
 /**
  * Screen for Protected App Selection.
- * UPDATED: Removed the system-app filter to ensure Gallery, Photos, and Files 
- * are visible and protectable. Added fragment attachment checks to prevent crashes.
+ * UPDATED & FIXED: 
+ * 1. Enabled HFS Self-Protection: HFS now appears in its own list.
+ * 2. Enabled System Apps: Gallery, Photos, and Files are now visible.
+ * 3. Thread Safety: Includes isAdded() checks to prevent tab-switching crashes.
  */
 public class ProtectedAppsFragment extends Fragment implements AppSelectionAdapter.OnAppSelectionListener {
 
@@ -61,7 +63,7 @@ public class ProtectedAppsFragment extends Fragment implements AppSelectionAdapt
         setupRecyclerView();
         setupSearch();
         
-        // Load all apps (including system apps) in a background thread
+        // Load all apps including system apps
         loadInstalledApps();
     }
 
@@ -88,8 +90,7 @@ public class ProtectedAppsFragment extends Fragment implements AppSelectionAdapt
 
     /**
      * Logic: Scans the device for apps.
-     * UPDATED: Now includes System Apps (Gallery/Files) by checking for 
-     * Launch Intents instead of filtering by System Flags.
+     * UPDATED: Now includes System Apps and the HFS app itself.
      */
     private void loadInstalledApps() {
         if (binding != null) {
@@ -97,12 +98,12 @@ public class ProtectedAppsFragment extends Fragment implements AppSelectionAdapt
         }
         
         executor.execute(() -> {
-            // Safety check: Is the fragment still attached?
+            // Safety check: Ensure the fragment is still attached to the Activity
             if (!isAdded() || getContext() == null) return;
 
             PackageManager pm = getContext().getPackageManager();
             
-            // Get ALL installed applications
+            // Fetch all applications regardless of system or user status
             List<ApplicationInfo> packages = pm.getInstalledApplications(PackageManager.GET_META_DATA);
             List<AppInfo> tempInfoList = new ArrayList<>();
             
@@ -111,15 +112,15 @@ public class ProtectedAppsFragment extends Fragment implements AppSelectionAdapt
 
             for (ApplicationInfo app : packages) {
                 /* 
-                 * FIX: Instead of skipping apps with FLAG_SYSTEM, we check if 
-                 * the app has a 'Launch Intent'. This correctly captures 
-                 * Gallery, File Manager, and Settings while ignoring 
-                 * hidden background system processes.
+                 * ENHANCEMENT: 
+                 * We use getLaunchIntentForPackage. This is the professional way to 
+                 * find every app that the user can actually "see" and "open", 
+                 * including System Gallery, Files, and built-in Photos.
                  */
                 if (pm.getLaunchIntentForPackage(app.packageName) != null) {
                     
-                    // Do not show our own HFS app in the list to avoid locking yourself out
-                    if (app.packageName.equals(getContext().getPackageName())) continue;
+                    // Logic updated: We no longer 'continue' (skip) the HFS package.
+                    // This allows you to lock the HFS app itself as requested.
 
                     String name = app.loadLabel(pm).toString();
                     Drawable icon = app.loadIcon(pm);
@@ -129,10 +130,10 @@ public class ProtectedAppsFragment extends Fragment implements AppSelectionAdapt
                 }
             }
 
-            // Sort the final list alphabetically
+            // Sort the final list alphabetically for easy navigation
             Collections.sort(tempInfoList, (a, b) -> a.getAppName().compareToIgnoreCase(b.getAppName()));
 
-            // Update the UI on the Main Thread
+            // Return the result to the UI Thread safely
             if (getActivity() != null && isAdded()) {
                 getActivity().runOnUiThread(() -> {
                     if (binding != null) {
@@ -149,6 +150,9 @@ public class ProtectedAppsFragment extends Fragment implements AppSelectionAdapt
         });
     }
 
+    /**
+     * Filters the list as the user types.
+     */
     private void filterApps(String query) {
         if (fullAppList == null) return;
         
@@ -163,7 +167,7 @@ public class ProtectedAppsFragment extends Fragment implements AppSelectionAdapt
     }
 
     /**
-     * Interface callback: Triggered when a user toggles the lock on an app.
+     * Interface callback: Triggered when a checkbox is toggled.
      */
     @Override
     public void onAppToggle(String packageName, boolean isSelected) {
@@ -175,13 +179,13 @@ public class ProtectedAppsFragment extends Fragment implements AppSelectionAdapt
             currentProtectedSet.remove(packageName);
         }
         
-        // Update the database immediately
+        // Save selection to persistent storage
         db.saveProtectedPackages(currentProtectedSet);
     }
 
     @Override
     public void onDestroyView() {
-        // Shutdown the executor immediately to prevent background crashes
+        // Stop background loading immediately to prevent crashes
         executor.shutdownNow();
         super.onDestroyView();
         binding = null;
