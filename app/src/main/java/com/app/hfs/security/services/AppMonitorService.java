@@ -26,9 +26,9 @@ import java.util.Set;
 
 /**
  * The core Background Service for HFS.
- * FIXED: Implemented 'Grace Period' logic to stop the infinite locking loop.
- * After a successful owner unlock, the service will ignore that specific app 
- * for 30 seconds to allow normal usage.
+ * FIXED: 
+ * 1. Removed 'Last Package' trap to ensure lock triggers every time.
+ * 2. Implemented 'Instant Re-Arm': Security resets the moment you leave a protected app.
  */
 public class AppMonitorService extends Service {
 
@@ -39,20 +39,19 @@ public class AppMonitorService extends Service {
     private Handler monitorHandler;
     private Runnable monitorRunnable;
     private HFSDatabaseHelper db;
-    private String lastPackageInForeground = "";
 
-    // SESSION GRACE PERIOD VARIABLES
+    // SESSION MANAGEMENT
     private static String unlockedPackage = "";
     private static long lastUnlockTimestamp = 0;
-    private static final long GRACE_PERIOD_MS = 30000; // 30 Seconds
+    private static final long SESSION_TIMEOUT_MS = 10000; // 10 Seconds max
 
     /**
-     * Static method to be called by LockScreenActivity upon successful verify.
-     * This tells the service to stop locking this app temporarily.
+     * Called by LockScreenActivity upon successful verify.
      */
     public static void unlockSession(String packageName) {
         unlockedPackage = packageName;
         lastUnlockTimestamp = System.currentTimeMillis();
+        Log.d(TAG, "Session Unlocked for: " + packageName);
     }
 
     @Override
@@ -60,22 +59,16 @@ public class AppMonitorService extends Service {
         super.onCreate();
         db = HFSDatabaseHelper.getInstance(this);
         monitorHandler = new Handler(Looper.getMainLooper());
-        Log.d(TAG, "Security Monitor Service Created");
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        // Start Foreground Service with secured notification
         startForeground(NOTIFICATION_ID, createSecurityNotification());
-
-        // Start the aggressive monitoring loop
         startMonitoringLoop();
-
         return START_STICKY; 
     }
 
     private Notification createSecurityNotification() {
-        // Secure the intent: Clicks now trigger the Lock Screen first
         Intent lockIntent = new Intent(this, LockScreenActivity.class);
         lockIntent.putExtra("TARGET_APP_NAME", "HFS Settings");
         lockIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
@@ -87,7 +80,7 @@ public class AppMonitorService extends Service {
 
         return new NotificationCompat.Builder(this, HFSApplication.CHANNEL_ID)
                 .setContentTitle("HFS Silent Guard Active")
-                .setContentText("Your privacy is currently protected")
+                .setContentText("Privacy Protection is running")
                 .setSmallIcon(R.drawable.hfs)
                 .setContentIntent(pendingIntent)
                 .setOngoing(true)
@@ -100,29 +93,27 @@ public class AppMonitorService extends Service {
             @Override
             public void run() {
                 String currentApp = getForegroundPackageName();
+                Set<String> protectedApps = db.getProtectedPackages();
 
-                if (!currentApp.equals(lastPackageInForeground)) {
-                    lastPackageInForeground = currentApp;
-                    
-                    Set<String> protectedApps = db.getProtectedPackages();
-                    
-                    if (protectedApps.contains(currentApp)) {
-                        
-                        // FIX: CHECK IF THE SESSION IS CURRENTLY GRANTED
-                        if (currentApp.equals(unlockedPackage)) {
-                            long timePassed = System.currentTimeMillis() - lastUnlockTimestamp;
-                            if (timePassed < GRACE_PERIOD_MS) {
-                                // Within 30 seconds of owner unlock - Do NOT trigger loop
-                                Log.d(TAG, "Grace Period Active for: " + currentApp);
-                                monitorHandler.postDelayed(this, MONITOR_TICK_MS);
-                                return;
-                            } else {
-                                // Session expired - Clear it
-                                unlockedPackage = "";
-                            }
-                        }
+                // 1. RE-ARM LOGIC: 
+                // If the current app is NOT the one we unlocked, and it's not HFS itself,
+                // we reset the session immediately.
+                if (!currentApp.equals(unlockedPackage) && !currentApp.equals(getPackageName())) {
+                    if (!unlockedPackage.isEmpty()) {
+                        Log.d(TAG, "User left app. Re-arming security for: " + unlockedPackage);
+                        unlockedPackage = "";
+                    }
+                }
 
-                        Log.i(TAG, "TRIGGERING LOCK FOR: " + currentApp);
+                // 2. TRIGGER LOGIC:
+                if (protectedApps.contains(currentApp)) {
+                    
+                    // Only skip if the session is still valid for THIS specific app
+                    boolean isSessionValid = currentApp.equals(unlockedPackage) && 
+                            (System.currentTimeMillis() - lastUnlockTimestamp < SESSION_TIMEOUT_MS);
+
+                    if (!isSessionValid) {
+                        Log.i(TAG, "STRICT LOCK TRIGGER: " + currentApp);
                         triggerLockOverlay(currentApp);
                     }
                 }
@@ -135,10 +126,8 @@ public class AppMonitorService extends Service {
 
     private String getForegroundPackageName() {
         UsageStatsManager usm = (UsageStatsManager) getSystemService(Context.USAGE_STATS_SERVICE);
-        long endTime = System.currentTimeMillis();
-        long startTime = endTime - 1000 * 10;
-
-        UsageEvents events = usm.queryEvents(startTime, endTime);
+        long time = System.currentTimeMillis();
+        UsageEvents events = usm.queryEvents(time - 1000 * 10, time);
         UsageEvents.Event event = new UsageEvents.Event();
         String currentPkg = "";
 
@@ -153,7 +142,6 @@ public class AppMonitorService extends Service {
 
     private void triggerLockOverlay(String packageName) {
         String appName = getAppNameFromPackage(packageName);
-        
         Intent lockIntent = new Intent(this, LockScreenActivity.class);
         lockIntent.putExtra("TARGET_APP_PACKAGE", packageName);
         lockIntent.putExtra("TARGET_APP_NAME", appName);
@@ -166,7 +154,7 @@ public class AppMonitorService extends Service {
         try {
             startActivity(lockIntent);
         } catch (Exception e) {
-            Log.e(TAG, "Overlay Trigger Failed: " + e.getMessage());
+            Log.e(TAG, "Trigger Failed: " + e.getMessage());
         }
     }
 
@@ -190,7 +178,5 @@ public class AppMonitorService extends Service {
 
     @Nullable
     @Override
-    public IBinder onBind(Intent intent) {
-        return null;
-    }
+    public IBinder onBind(Intent intent) { return null; }
 }
