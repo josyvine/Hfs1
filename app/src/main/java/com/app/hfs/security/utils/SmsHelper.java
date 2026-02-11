@@ -1,116 +1,244 @@
-package com.hfs.security.utils;
+package com.hfs.security.ui;
 
-import android.content.Context;
-import android.net.Uri;
-import android.telephony.SmsManager;
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
+import android.view.View;
+import android.view.WindowManager;
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AlertDialog;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.biometric.BiometricPrompt;
+import androidx.camera.core.CameraSelector;
+import androidx.camera.core.ImageAnalysis;
+import androidx.camera.core.ImageProxy;
+import androidx.camera.core.Preview;
+import androidx.camera.lifecycle.ProcessCameraProvider;
+import androidx.core.content.ContextCompat;
 
-import java.io.File;
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.Locale;
+import com.google.common.util.concurrent.ListenableFuture;
+import com.hfs.security.databinding.ActivityLockScreenBinding;
+import com.hfs.security.services.AppMonitorService;
+import com.hfs.security.utils.FaceAuthHelper;
+import com.hfs.security.utils.FileSecureHelper;
+import com.hfs.security.utils.HFSDatabaseHelper;
+import com.hfs.security.utils.SmsHelper;
+
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
- * Advanced Alert Utility.
- * UPDATED: 
- * 1. Added Google Maps link support for GPS tracking.
- * 2. Added MMS logic to attempt sending intruder photos.
- * 3. Standardized alert messages as per professional security requirements.
+ * The Security Overlay Activity.
+ * FIXED: 
+ * 1. Session Grace logic: Calls AppMonitorService to kill the locking loop.
+ * 2. TECHNICAL POPUP: Shows a real Java-style error dialog if identity verification fails.
+ * 3. Fingerprint Fail trigger: Sends alert if system sensor mismatch occurs.
  */
-public class SmsHelper {
+public class LockScreenActivity extends AppCompatActivity {
 
-    private static final String TAG = "HFS_SmsHelper";
+    private static final String TAG = "HFS_LockScreen";
+    private ActivityLockScreenBinding binding;
+    private ExecutorService cameraExecutor;
+    private FaceAuthHelper faceAuthHelper;
+    private HFSDatabaseHelper db;
+    private String targetPackage;
+    
+    private boolean isActionTaken = false;
+    private boolean isProcessing = false;
+    private final Handler watchdogHandler = new Handler(Looper.getMainLooper());
+
+    private Executor biometricExecutor;
+    private BiometricPrompt biometricPrompt;
+    private BiometricPrompt.PromptInfo promptInfo;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                | WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+                | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
+
+        binding = ActivityLockScreenBinding.inflate(getLayoutInflater());
+        setContentView(binding.getRoot());
+
+        db = HFSDatabaseHelper.getInstance(this);
+        faceAuthHelper = new FaceAuthHelper(this);
+        cameraExecutor = Executors.newSingleThreadExecutor();
+        
+        targetPackage = getIntent().getStringExtra("TARGET_APP_PACKAGE");
+
+        binding.lockContainer.setVisibility(View.GONE);
+        binding.scanningIndicator.setVisibility(View.VISIBLE);
+
+        setupBiometricAuth();
+        startInvisibleCamera();
+
+        // 2-Second Watchdog for Verification
+        watchdogHandler.postDelayed(() -> {
+            if (!isActionTaken && !isFinishing()) {
+                showDiagnosticError("java.lang.SecurityException: Identity verification timeout. No face landmarks captured within 2000ms.");
+                triggerIntruderAlert(null);
+            }
+        }, 2000);
+
+        binding.btnUnlockPin.setOnClickListener(v -> checkPinAndUnlock());
+        binding.btnFingerprint.setOnClickListener(v -> biometricPrompt.authenticate(promptInfo));
+    }
+
+    private void setupBiometricAuth() {
+        biometricExecutor = ContextCompat.getMainExecutor(this);
+        biometricPrompt = new BiometricPrompt(this, biometricExecutor, 
+                new BiometricPrompt.AuthenticationCallback() {
+            @Override
+            public void onAuthenticationSucceeded(@NonNull BiometricPrompt.AuthenticationResult result) {
+                super.onAuthenticationSucceeded(result);
+                onSecurityVerified();
+            }
+
+            @Override
+            public void onAuthenticationFailed() {
+                super.onAuthenticationFailed();
+                // Lost Phone Logic: Fail immediately alerts owner
+                triggerIntruderAlert(null);
+            }
+        });
+
+        promptInfo = new BiometricPrompt.PromptInfo.Builder()
+                .setTitle("HFS Security")
+                .setSubtitle("Confirm fingerprint to unlock")
+                .setNegativeButtonText("Use PIN")
+                .build();
+    }
+
+    private void onSecurityVerified() {
+        watchdogHandler.removeCallbacksAndMessages(null);
+        if (targetPackage != null) {
+            AppMonitorService.unlockSession(targetPackage);
+        }
+        finish();
+    }
 
     /**
-     * Sends a security alert SMS including the Google Maps location link.
-     * 
-     * @param context App context.
-     * @param targetAppName The name of the app being accessed.
-     * @param mapLink The Google Maps URL generated by LockScreenActivity.
+     * USER REQUEST: Exact Java Error Popup logic.
+     * Shows technical details of why verification failed.
      */
-    public static void sendAlertSms(Context context, String targetAppName, String mapLink) {
-        HFSDatabaseHelper db = HFSDatabaseHelper.getInstance(context);
-        String trustedNumber = db.getTrustedNumber();
+    private void showDiagnosticError(String errorDetail) {
+        runOnUiThread(() -> {
+            new AlertDialog.Builder(this, R.style.Theme_HFS_Dialog)
+                .setTitle("Security Identity Failure")
+                .setMessage("A fatal biometric logic error occurred:\n\n" + errorDetail)
+                .setCancelable(false)
+                .setPositiveButton("CLOSE", (dialog, which) -> dialog.dismiss())
+                .show();
+        });
+    }
 
-        if (trustedNumber == null || trustedNumber.isEmpty()) {
-            Log.e(TAG, "SMS Alert Failed: No trusted number saved.");
+    private void startInvisibleCamera() {
+        ListenableFuture<ProcessCameraProvider> cameraProviderFuture = 
+                ProcessCameraProvider.getInstance(this);
+
+        cameraProviderFuture.addListener(() -> {
+            try {
+                ProcessCameraProvider cameraProvider = cameraProviderFuture.get();
+                Preview preview = new Preview.Builder().build();
+                preview.setSurfaceProvider(binding.invisiblePreview.getSurfaceProvider());
+
+                ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
+                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                        .build();
+
+                imageAnalysis.setAnalyzer(cameraExecutor, this::processCameraFrame);
+
+                CameraSelector cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA;
+                cameraProvider.unbindAll();
+                cameraProvider.bindToLifecycle(this, cameraSelector, preview, imageAnalysis);
+
+            } catch (ExecutionException | InterruptedException e) {
+                showDiagnosticError("android.hardware.camera2.CameraAccessException: " + e.getMessage());
+                triggerIntruderAlert(null);
+            }
+        }, ContextCompat.getMainExecutor(this));
+    }
+
+    private void processCameraFrame(@NonNull ImageProxy imageProxy) {
+        if (isProcessing || isActionTaken) {
+            imageProxy.close();
             return;
         }
 
-        // Generate Time String: 10-Feb-2026 09:02 PM
-        String currentTime = new SimpleDateFormat("dd-MMM-yyyy hh:mm a", Locale.getDefault()).format(new Date());
+        isProcessing = true;
+        faceAuthHelper.authenticate(imageProxy, new FaceAuthHelper.AuthCallback() {
+            @Override
+            public void onMatchFound() {
+                runOnUiThread(() -> onSecurityVerified());
+            }
 
-        // Construct the message body
-        StringBuilder messageBuilder = new StringBuilder();
-        messageBuilder.append("⚠ ALERT: Someone accessed your ").append(targetAppName).append("\n");
-        messageBuilder.append("Time: ").append(currentTime).append("\n");
-        messageBuilder.append("Action: App locked + Intruder photo saved\n");
+            @Override
+            public void onMismatchFound() {
+                // Fetch technical ratio mismatch details for the popup
+                String diagnostic = faceAuthHelper.getLastDiagnosticInfo();
+                showDiagnosticError("com.hfs.biometric.MismatchException: Face detected but does not match Owner Landmark Map.\n" + diagnostic);
+                triggerIntruderAlert(imageProxy);
+            }
 
-        // ENHANCEMENT: Add the GPS Map Link if location was captured
-        if (mapLink != null) {
-            messageBuilder.append("Location: ").append(mapLink);
+            @Override
+            public void onError(String error) {
+                Log.e(TAG, "Diagnostic: " + error);
+                isProcessing = false;
+                imageProxy.close();
+            }
+        });
+    }
+
+    private void triggerIntruderAlert(ImageProxy imageProxy) {
+        if (isActionTaken) return;
+        isActionTaken = true;
+        watchdogHandler.removeCallbacksAndMessages(null);
+
+        runOnUiThread(() -> {
+            binding.scanningIndicator.setVisibility(View.GONE);
+            binding.lockContainer.setVisibility(View.VISIBLE);
+
+            if (imageProxy != null) {
+                FileSecureHelper.saveIntruderCapture(LockScreenActivity.this, imageProxy);
+            }
+
+            sendSecurityAlert();
+            biometricPrompt.authenticate(promptInfo);
+        });
+    }
+
+    private void sendSecurityAlert() {
+        String appName = getIntent().getStringExtra("TARGET_APP_NAME");
+        if (appName == null) appName = "Protected App";
+        // Logic for "3 messages in 5 minutes" moved to SmsHelper
+        SmsHelper.sendAlertSms(this, appName, null);
+    }
+
+    private void checkPinAndUnlock() {
+        String input = binding.etPinInput.getText().toString();
+        if (input.equals(db.getMasterPin())) {
+            onSecurityVerified();
         } else {
-            messageBuilder.append("Location: GPS signal unavailable");
-        }
-
-        String finalMessage = messageBuilder.toString();
-
-        try {
-            SmsManager smsManager;
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                smsManager = context.getSystemService(SmsManager.class);
-            } else {
-                smsManager = SmsManager.getDefault();
-            }
-
-            if (smsManager != null) {
-                // Split message into parts to ensure delivery if text is long (MMS fallback)
-                java.util.ArrayList<String> parts = smsManager.divideMessage(finalMessage);
-                smsManager.sendMultipartTextMessage(trustedNumber, null, parts, null, null);
-                Log.i(TAG, "Security Alert SMS sent to: " + trustedNumber);
-            }
-
-        } catch (Exception e) {
-            Log.e(TAG, "SMS Transmission Error: " + e.getMessage());
+            binding.tvErrorMsg.setText("Incorrect Master PIN");
+            binding.etPinInput.setText("");
         }
     }
 
-    /**
-     * MMS Logic (Experimental Enhancement):
-     * Attempts to send the intruder's photo file to the trusted number.
-     * 
-     * @param context App context.
-     * @param photoFile The JPEG file captured of the intruder.
-     */
-    public static void sendMmsAlert(Context context, File photoFile) {
-        HFSDatabaseHelper db = HFSDatabaseHelper.getInstance(context);
-        String trustedNumber = db.getTrustedNumber();
-
-        if (trustedNumber == null || trustedNumber.isEmpty() || photoFile == null || !photoFile.exists()) {
-            return;
-        }
-
-        try {
-            /*
-             * MMS TECHNICAL NOTE:
-             * Android 5.0+ uses the 'sendMultimediaMessage' API. 
-             * This requires a content provider URI for the photo.
-             */
-            SmsManager smsManager = SmsManager.getDefault();
-            
-            // Build the MMS Config (MMSC, Proxy, etc is handled by system APN)
-            // Note: This often fails if the app is not the 'Default SMS App'.
-            // We use this as a 'Secondary attempt' logic.
-            
-            Uri contentUri = Uri.fromFile(photoFile);
-            
-            // For privacy and stealth, we do not show a UI for this send.
-            // smsManager.sendMultimediaMessage(context, contentUri, null, null, null);
-            
-            Log.d(TAG, "MMS request queued for photo: " + photoFile.getName());
-
-        } catch (Exception e) {
-            Log.e(TAG, "MMS System Blocked: " + e.getMessage());
-        }
+    @Override
+    protected void onDestroy() {
+        watchdogHandler.removeCallbacksAndMessages(null);
+        cameraExecutor.shutdown();
+        super.onDestroy();
     }
+
+    @Override
+    public void onBackPressed() {}
 }
