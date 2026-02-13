@@ -10,20 +10,34 @@ import android.os.Build;
 import android.os.Process;
 import android.provider.Settings;
 
+import androidx.biometric.BiometricManager;
 import androidx.core.content.ContextCompat;
 
 /**
- * Advanced Permission Manager for HFS Security.
- * UPDATED:
- * 1. Added checks for GPS Location permissions (for Map link).
- * 2. Added checks for Call Interception permissions (for Dialer fix).
- * 3. Integrated verification for the new security enhancements.
+ * Advanced Permission & Hardware Manager for HFS Security.
+ * UPDATED: 
+ * 1. Step 1 Implementation: Added Class 3 (Strong) Biometric hardware detection.
+ * 2. Maintained GPS, Phone, and Overlay verification methods.
  */
 public class PermissionHelper {
 
     /**
-     * Checks if the app can access GPS coordinates.
-     * Required for the Google Maps link in the alert SMS.
+     * Step 1: Hardware Capability Check.
+     * Detects if the device has official secure hardware (Class 3) for Face/Fingerprint.
+     * Logic: Asks Android if 'BIOMETRIC_STRONG' is supported and enrolled.
+     */
+    public static boolean hasClass3Biometrics(Context context) {
+        BiometricManager biometricManager = BiometricManager.from(context);
+        
+        // BIOMETRIC_STRONG (Class 3) indicates hardware that meets high security 
+        // standards (3D sensors / secure TEE processing).
+        int canAuthenticate = biometricManager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG);
+        
+        return canAuthenticate == BiometricManager.BIOMETRIC_SUCCESS;
+    }
+
+    /**
+     * Checks if the app can access GPS coordinates for the Map link enhancement.
      */
     public static boolean hasLocationPermissions(Context context) {
         return ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) 
@@ -31,8 +45,7 @@ public class PermissionHelper {
     }
 
     /**
-     * Checks if the app can intercept dialed numbers.
-     * Required for the Stealth Mode Dialer to function on Oppo/Realme.
+     * Checks if the app can intercept dialed numbers (Oppo Dialer Fix).
      */
     public static boolean hasPhonePermissions(Context context) {
         boolean statePerm = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) 
@@ -46,7 +59,6 @@ public class PermissionHelper {
 
     /**
      * Checks if the app has permission to show the Lock Screen overlay.
-     * On Oppo, this is the "Floating Windows" permission.
      */
     public static boolean canDrawOverlays(Context context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -85,7 +97,7 @@ public class PermissionHelper {
     }
 
     /**
-     * Master check to see if HFS has all permissions for the new enhancements.
+     * Master check to see if HFS is fully authorized to protect the phone.
      */
     public static boolean isAllSecurityGranted(Context context) {
         return hasBasePermissions(context) && 
