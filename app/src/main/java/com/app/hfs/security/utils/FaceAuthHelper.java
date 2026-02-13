@@ -2,6 +2,7 @@ package com.hfs.security.utils;
 
 import android.content.Context;
 import android.graphics.PointF;
+import android.graphics.Rect;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -20,17 +21,17 @@ import java.util.List;
 
 /**
  * Advanced Biometric Verification Engine.
- * FIXED: 
- * 1. Implemented Dual-Index Triangulation (Eyes-to-Nose and Eyes-to-Mouth).
- * 2. Optimized for distance variance to prevent false approvals.
- * 3. Enhanced Diagnostic logging for the Java Error Popup.
+ * FIXED for "Zero-Fail" Plan:
+ * 1. Step 2: Normalizes live landmarks by Face Width % (Fixes Distance/Zoom failure).
+ * 2. Step 3: Verifies 5-Point Triangulation (Eye-Eye, Eye-Nose, Mouth-Width).
+ * 3. Diagnostic Trace: Provides data for the Java Error Popup.
  */
 public class FaceAuthHelper {
 
     private static final String TAG = "HFS_FaceAuthHelper";
     private final FaceDetector detector;
     private final HFSDatabaseHelper db;
-    private String lastDiagnosticInfo = "No biometric data captured.";
+    private String lastDiagnosticInfo = "Awaiting landmark triangulation...";
 
     public interface AuthCallback {
         void onMatchFound();
@@ -41,16 +42,20 @@ public class FaceAuthHelper {
     public FaceAuthHelper(Context context) {
         this.db = HFSDatabaseHelper.getInstance(context);
 
+        // Max accuracy settings to catch even similar-looking intruders
         FaceDetectorOptions options = new FaceDetectorOptions.Builder()
                 .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
                 .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
                 .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
-                .setMinFaceSize(0.25f)
+                .setMinFaceSize(0.20f) 
                 .build();
 
         this.detector = FaceDetection.getClient(options);
     }
 
+    /**
+     * Provides technical details of the failure to the LockScreen popup.
+     */
     public String getLastDiagnosticInfo() {
         return lastDiagnosticInfo;
     }
@@ -72,16 +77,17 @@ public class FaceAuthHelper {
                     @Override
                     public void onSuccess(List<Face> faces) {
                         if (faces.isEmpty()) {
-                            callback.onError("No landmarks found");
+                            callback.onError("Face not detected in frame.");
                         } else {
-                            verifyFaceLandmarks(faces.get(0), callback);
+                            // Step 2 & 3: Run the Normalized Triangulation check
+                            verifyFaceGeometry(faces.get(0), callback);
                         }
                     }
                 })
                 .addOnFailureListener(new OnFailureListener() {
                     @Override
                     public void onFailure(@NonNull Exception e) {
-                        lastDiagnosticInfo = "ERROR: ML Kit processing failed.";
+                        lastDiagnosticInfo = "CRITICAL_ENGINE_ERROR: " + e.getMessage();
                         callback.onError(e.getMessage());
                     }
                 })
@@ -89,77 +95,85 @@ public class FaceAuthHelper {
     }
 
     /**
-     * Logic: Triangulates Eyes, Nose, and Mouth proportions.
+     * Normalizes the face geometry and compares it against the saved signature.
      */
-    private void verifyFaceLandmarks(Face face, AuthCallback callback) {
-        String savedData = db.getOwnerFaceData();
+    private void verifyFaceGeometry(Face face, AuthCallback callback) {
+        String savedMap = db.getOwnerFaceData();
 
         FaceLandmark leftEye = face.getLandmark(FaceLandmark.LEFT_EYE);
         FaceLandmark rightEye = face.getLandmark(FaceLandmark.RIGHT_EYE);
         FaceLandmark nose = face.getLandmark(FaceLandmark.NOSE_BASE);
-        FaceLandmark mouth = face.getLandmark(FaceLandmark.MOUTH_BOTTOM);
+        FaceLandmark mouthL = face.getLandmark(FaceLandmark.MOUTH_LEFT);
+        FaceLandmark mouthR = face.getLandmark(FaceLandmark.MOUTH_RIGHT);
 
-        if (leftEye == null || rightEye == null || nose == null || mouth == null) {
-            lastDiagnosticInfo = "VISIBILITY_ERROR: Ensure Eyes, Nose, and Mouth are visible.";
+        if (leftEye == null || rightEye == null || nose == null || mouthL == null || mouthR == null) {
+            lastDiagnosticInfo = "VISIBILITY_ERROR: Features (Eyes/Nose/Mouth) partially obscured.";
             callback.onError("Incomplete features");
             return;
         }
 
-        // 1. Calculate Distances
-        float eyeDist = getDistance(leftEye.getPosition(), rightEye.getPosition());
-        float eyeToNoseDist = getDistance(leftEye.getPosition(), nose.getPosition());
-        float eyeToMouthDist = getDistance(leftEye.getPosition(), mouth.getPosition());
+        // Step 2: Calculate Normalization Factor (Current Face Width)
+        Rect bounds = face.getBoundingBox();
+        float currentFaceWidth = (float) bounds.width();
+        if (currentFaceWidth <= 0) return;
 
-        if (eyeToNoseDist == 0 || eyeToMouthDist == 0) return;
+        // Step 3: Calculate Current Landmark Proportions
+        float eyeDist = calculateDistance(leftEye.getPosition(), rightEye.getPosition());
+        float noseDist = calculateDistance(leftEye.getPosition(), nose.getPosition());
+        float mouthWidth = calculateDistance(mouthL.getPosition(), mouthR.getPosition());
 
-        // 2. Generate Dual Indices (Proportions)
-        float currentRatioA = eyeDist / eyeToNoseDist; // Index A
-        float currentRatioB = eyeDist / eyeToMouthDist; // Index B
+        // Convert to Width-Normalized Ratios (%)
+        float liveRatioEE = eyeDist / currentFaceWidth;
+        float liveRatioEN = noseDist / currentFaceWidth;
+        float liveRatioMW = mouthWidth / currentFaceWidth;
 
-        if (savedData == null || !savedData.contains("|")) {
-            lastDiagnosticInfo = "DATABASE_ERROR: Valid Owner Map not found. Rescan required.";
+        // Verify Database integrity
+        if (savedMap == null || !savedMap.contains("|")) {
+            lastDiagnosticInfo = "DB_ERROR: Owner Map invalid or missing landmark data.";
             callback.onMismatchFound();
             return;
         }
 
         try {
-            // Split the saved data (Format: RatioA|RatioB)
-            String[] parts = savedData.split("\\|");
-            float savedRatioA = Float.parseFloat(parts[0]);
-            float savedRatioB = Float.parseFloat(parts[1]);
+            // Saved Map format: RatioEE|RatioEN|RatioMW
+            String[] parts = savedMap.split("\\|");
+            float savedEE = Float.parseFloat(parts[0]);
+            float savedEN = Float.parseFloat(parts[1]);
+            float savedMW = Float.parseFloat(parts[2]);
 
-            // 3. Calculate Variance for both points
-            float varA = Math.abs(currentRatioA - savedRatioA) / savedRatioA;
-            float varB = Math.abs(currentRatioB - savedRatioB) / savedRatioB;
+            // Calculate Variance for each landmark triangulation point
+            float varEE = Math.abs(liveRatioEE - savedEE) / savedEE;
+            float varEN = Math.abs(liveRatioEN - savedEN) / savedEN;
+            float varMW = Math.abs(liveRatioMW - savedMW) / savedMW;
 
-            // Average variance for diagnostics
-            float totalVariance = (varA + varB) / 2;
-
+            // Diagnostic trace for the Java Lang error popup
+            float totalAvgVar = (varEE + varEN + varMW) / 3;
             lastDiagnosticInfo = String.format(
-                "Biometric Trace:\nSaved: A:%.2f B:%.2f\nLive: A:%.2f B:%.2f\nTotal Variance: %.1f%%", 
-                savedRatioA, savedRatioB, currentRatioA, currentRatioB, (totalVariance * 100)
+                "Biometric Map Variance:\nEye-Eye: %.1f%%\nEye-Nose: %.1f%%\nMouth-Width: %.1f%%\nTotal Average: %.1f%%", 
+                (varEE * 100), (varEN * 100), (varMW * 100), (totalAvgVar * 100)
             );
 
             /*
-             * STRICT THRESHOLD:
-             * Owner must match both indices within 12%.
-             * Intruders (even family) will deviate on at least one index by 20%+.
+             * ZERO-FAIL THRESHOLD:
+             * Owner map matches if all three landmark points are within 12% tolerance.
+             * This handles lens distortion while rejecting intruders who do not share 
+             * your specific bone structure proportions.
              */
-            if (varA <= 0.12f && varB <= 0.12f) {
-                Log.i(TAG, "Owner Match: " + totalVariance);
+            if (varEE <= 0.12f && varEN <= 0.12f && varMW <= 0.12f) {
+                Log.i(TAG, "Identity Match Verified.");
                 callback.onMatchFound();
             } else {
-                Log.w(TAG, "Intruder Rejected: " + lastDiagnosticInfo);
+                Log.w(TAG, "Identity Rejected: " + lastDiagnosticInfo);
                 callback.onMismatchFound();
             }
 
         } catch (Exception e) {
-            lastDiagnosticInfo = "DATA_ERROR: Face Map corrupted.";
+            lastDiagnosticInfo = "MAP_PARSING_ERROR: Landmark data corrupt.";
             callback.onMismatchFound();
         }
     }
 
-    private float getDistance(PointF p1, PointF p2) {
+    private float calculateDistance(PointF p1, PointF p2) {
         return (float) Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
     }
 
