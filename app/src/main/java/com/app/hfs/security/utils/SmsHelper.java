@@ -11,58 +11,62 @@ import java.util.Date;
 import java.util.Locale;
 
 /**
- * Advanced Alert & SMS/MMS Utility.
- * FIXED: 
- * 1. Automatic Country Code (+91) Sanitization for external delivery.
- * 2. Strict Limit: 3 messages per 5 minutes per app requirements.
- * 3. Simplified formatting to bypass carrier spam filters.
+ * Advanced Alert & SMS Transmission Utility.
+ * UPDATED for "Zero-Fail" Plan:
+ * 1. Breach Specificity: Differentiates between Face and Fingerprint failures.
+ * 2. Routing Fix: Ensures international formatting (+91) for external phones.
+ * 3. Strict Cooldown: Limits alerts to 3 messages per 5-minute window.
  */
 public class SmsHelper {
 
     private static final String TAG = "HFS_SmsHelper";
-    private static final String PREF_SMS_COOLDOWN = "hfs_sms_tracker";
-    private static final long COOLDOWN_WINDOW_MS = 5 * 60 * 1000; // 5 Minutes
-    private static final int MAX_MESSAGES_PER_WINDOW = 3;
+    private static final String PREF_SMS_LIMITER = "hfs_sms_limiter_prefs";
+    private static final long WINDOW_MS = 5 * 60 * 1000; // 5 Minutes
+    private static final int MAX_MSGS = 3; // Exactly 3 messages limit
 
     /**
-     * Sends a security alert SMS to the external trusted number.
-     * Includes automatic phone number formatting and cooldown logic.
+     * Sends a detailed security alert SMS.
+     * 
+     * @param context App context.
+     * @param targetApp Name of the app triggered.
+     * @param mapLink Google Maps URL.
+     * @param alertType "Face Mismatch" or "Fingerprint Failure".
      */
-    public static void sendAlertSms(Context context, String targetAppName, String mapLink) {
+    public static void sendAlertSms(Context context, String targetApp, String mapLink, String alertType) {
         
-        // 1. CHECK COOLDOWN (3 messages / 5 minutes)
+        // 1. VERIFY COOLDOWN STATUS (3 msgs / 5 mins)
         if (!isSmsAllowed(context)) {
-            Log.w(TAG, "SMS Suppression: Limit reached (3 msgs/5 mins).");
+            Log.w(TAG, "SMS Limit Reached: Blocking transmission for 5-minute cooldown.");
             return;
         }
 
         HFSDatabaseHelper db = HFSDatabaseHelper.getInstance(context);
-        String rawNumber = db.getTrustedNumber();
+        String savedNumber = db.getTrustedNumber();
 
-        if (rawNumber == null || rawNumber.isEmpty()) {
-            Log.e(TAG, "SMS Failure: No trusted number configured.");
+        if (savedNumber == null || savedNumber.isEmpty()) {
+            Log.e(TAG, "SMS Failure: No trusted number set in settings.");
             return;
         }
 
-        // 2. SANITIZE PHONE NUMBER
-        // Ensures the message is sent to an international-ready format
-        String finalPhoneNumber = sanitizePhoneNumber(rawNumber);
+        // 2. INTERNATIONAL FORMATTING (+91 Fix)
+        String finalRecipient = formatInternationalNumber(savedNumber);
 
-        // 3. CONSTRUCT MESSAGE BODY
-        String currentTime = new SimpleDateFormat("dd-MMM-yyyy hh:mm a", Locale.getDefault()).format(new Date());
+        // 3. CONSTRUCT ENHANCED ALERT TEXT
+        String time = new SimpleDateFormat("dd-MMM HH:mm", Locale.getDefault()).format(new Date());
         
-        StringBuilder messageBuilder = new StringBuilder();
-        messageBuilder.append("⚠ ALERT: Someone accessed ").append(targetAppName).append("\n");
-        messageBuilder.append("Time: ").append(currentTime).append("\n");
-        messageBuilder.append("Action: App Locked + Photo Saved\n");
+        StringBuilder smsBody = new StringBuilder();
+        smsBody.append("⚠ HFS SECURITY ALERT\n");
+        smsBody.append("Breach: ").append(alertType).append("\n");
+        smsBody.append("App: ").append(targetApp).append("\n");
+        smsBody.append("Time: ").append(time).append("\n");
 
         if (mapLink != null && !mapLink.isEmpty()) {
-            messageBuilder.append("Location: ").append(mapLink);
+            smsBody.append("Map: ").append(mapLink);
+        } else {
+            smsBody.append("Location: GPS signal pending");
         }
 
-        String finalMessage = messageBuilder.toString();
-
-        // 4. EXECUTE TRANSMISSION
+        // 4. EXECUTE SEND
         try {
             SmsManager smsManager;
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
@@ -72,71 +76,65 @@ public class SmsHelper {
             }
 
             if (smsManager != null) {
-                // Split long messages to ensure delivery to external carriers
-                java.util.ArrayList<String> parts = smsManager.divideMessage(finalMessage);
-                smsManager.sendMultipartTextMessage(finalPhoneNumber, null, parts, null, null);
+                java.util.ArrayList<String> parts = smsManager.divideMessage(smsBody.toString());
+                smsManager.sendMultipartTextMessage(finalRecipient, null, parts, null, null);
                 
-                Log.i(TAG, "External SMS Alert sent to: " + finalPhoneNumber);
+                Log.i(TAG, "Detailed alert sent to: " + finalRecipient);
                 
-                // 5. UPDATE COOLDOWN TRACKER
-                incrementSmsCounter(context);
+                // 5. UPDATE COOLDOWN COUNTER
+                trackSmsSent(context);
             }
-
         } catch (Exception e) {
-            Log.e(TAG, "SMS Error: Transmission blocked by carrier or system: " + e.getMessage());
+            Log.e(TAG, "Carrier Block: Failed to deliver external SMS: " + e.getMessage());
         }
     }
 
     /**
-     * Fix for External Delivery: Ensures number starts with +91 (or custom code).
+     * Normalizes the phone number to bypass carrier routing blocks.
      */
-    private static String sanitizePhoneNumber(String number) {
-        String clean = number.replaceAll("[^\\d]", ""); // Keep only digits
+    private static String formatInternationalNumber(String number) {
+        String clean = number.replaceAll("[^\\d]", "");
         
-        // If the user didn't type '+', assume India (+91) as default for your testing
-        // You can change "91" to your specific country code if different.
+        // If the number doesn't start with '+', we prepend the standard code
         if (!number.startsWith("+")) {
             if (clean.length() == 10) {
-                return "+91" + clean;
+                return "+91" + clean; // Defaulting to India for your specific testing
             }
         }
-        
-        // If it already has a '+' or is in a different format, return as is but with '+'
         return number.startsWith("+") ? number : "+" + number;
     }
 
     /**
-     * Enforces the 3-msg/5-min rule.
+     * Logic: Implements the 3-msg/5-min safety window.
      */
     private static boolean isSmsAllowed(Context context) {
-        SharedPreferences prefs = context.getSharedPreferences(PREF_SMS_COOLDOWN, Context.MODE_PRIVATE);
-        long windowStart = prefs.getLong("window_start", 0);
-        int count = prefs.getInt("count", 0);
+        SharedPreferences prefs = context.getSharedPreferences(PREF_SMS_LIMITER, Context.MODE_PRIVATE);
+        long windowStart = prefs.getLong("start_time", 0);
+        int currentCount = prefs.getInt("msg_count", 0);
         long now = System.currentTimeMillis();
 
-        // Check if the 5-minute window has expired
-        if (now - windowStart > COOLDOWN_WINDOW_MS) {
-            // Reset the window
-            prefs.edit().putLong("window_start", now).putInt("count", 0).apply();
+        // Check if 5 minutes have passed since the first message of the current window
+        if (now - windowStart > WINDOW_MS) {
+            // Window expired: Reset counter and timestamp
+            prefs.edit().putLong("start_time", now).putInt("msg_count", 0).apply();
             return true;
         }
 
-        // Return true only if under the 3-message limit
-        return count < MAX_MESSAGES_PER_WINDOW;
+        // Return true only if we haven't hit the 3-message ceiling
+        return currentCount < MAX_MSGS;
     }
 
-    private static void incrementSmsCounter(Context context) {
-        SharedPreferences prefs = context.getSharedPreferences(PREF_SMS_COOLDOWN, Context.MODE_PRIVATE);
-        int count = prefs.getInt("count", 0);
-        prefs.edit().putInt("count", count + 1).apply();
+    private static void trackSmsSent(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREF_SMS_LIMITER, Context.MODE_PRIVATE);
+        int count = prefs.getInt("msg_count", 0);
+        prefs.edit().putInt("msg_count", count + 1).apply();
     }
 
     /**
-     * Placeholder for future MMS development. 
-     * Requires Mobile Data and specific APN handling.
+     * Internal Placeholder for future MMS Photo Packaging.
      */
-    public static void sendMmsAlert(Context context, File photoFile) {
-        if (photoFile == null || !photoFile.exists()) return;
-        Log.d(TAG, "MMS: Image detected. Packaging PDU for transmission...");
+    public static void sendMmsPhoto(Context context, File image) {
+        if (image == null || !image.exists()) return;
+        Log.d(TAG, "MMS Queue: Intruder photo detected, ready for packaging.");
     }
 }
