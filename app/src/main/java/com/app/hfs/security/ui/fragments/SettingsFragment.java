@@ -15,24 +15,20 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AlertDialog;
-import androidx.biometric.BiometricPrompt;
-import androidx.core.content.ContextCompat;
 import androidx.fragment.app.Fragment;
 
+import com.hfs.security.R;
 import com.hfs.security.databinding.FragmentSettingsBinding;
 import com.hfs.security.receivers.AdminReceiver;
-import com.hfs.security.ui.FaceSetupActivity;
 import com.hfs.security.ui.SplashActivity;
 import com.hfs.security.utils.HFSDatabaseHelper;
 
-import java.util.concurrent.Executor;
-
 /**
- * Advanced Settings Screen.
- * UPDATED: 
- * 1. Added Biometric Gate: Fingerprint scan is now required before performing 'RE-SCAN'.
- * 2. Maintained Dual-Field Setup for Trusted Number and Secret PIN.
- * 3. Handles Anti-Uninstall and Stealth Mode toggles.
+ * Advanced Settings Screen for HFS Security.
+ * UPDATED PLAN:
+ * 1. Removed ML Kit Rescan logic - Face identity is now handled by the System.
+ * 2. Manages Trusted Number for alerts and the Master PIN (MPIN).
+ * 3. Handles Anti-Uninstall (Device Admin) and Stealth Mode (Dialer Trigger).
  */
 public class SettingsFragment extends Fragment {
 
@@ -41,14 +37,10 @@ public class SettingsFragment extends Fragment {
     private DevicePolicyManager devicePolicyManager;
     private ComponentName adminComponent;
 
-    // Biometric variables for the Re-scan Gate
-    private Executor executor;
-    private BiometricPrompt biometricPrompt;
-    private BiometricPrompt.PromptInfo promptInfo;
-
     @Nullable
     @Override
     public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container, @Nullable Bundle savedInstanceState) {
+        // Initialize ViewBinding for the settings layout
         binding = FragmentSettingsBinding.inflate(inflater, container, false);
         return binding.getRoot();
     }
@@ -58,137 +50,121 @@ public class SettingsFragment extends Fragment {
         super.onViewCreated(view, savedInstanceState);
         db = HFSDatabaseHelper.getInstance(requireContext());
         
+        // Initialize Device Admin components to prevent uninstallation
         devicePolicyManager = (DevicePolicyManager) requireContext().getSystemService(Context.DEVICE_POLICY_SERVICE);
         adminComponent = new ComponentName(requireContext(), AdminReceiver.class);
 
-        // Initialize the Biometric Gate logic
-        setupBiometricGate();
-        
-        loadSavedData();
-        setupClickListeners();
+        // UI Cleanup: Hide the Rescan section as it is no longer used in the new plan
+        if (binding.btnRescanFace != null) {
+            binding.btnRescanFace.setVisibility(View.GONE);
+        }
+
+        loadSettings();
+        setupListeners();
     }
 
-    private void loadSavedData() {
+    /**
+     * Populates the input fields and switches with currently saved data.
+     */
+    private void loadSettings() {
+        // Load the secondary phone number that receives alert SMS
         binding.etTrustedNumber.setText(db.getTrustedNumber());
+        
+        // Load the 4-digit Master PIN (MPIN) used for manual override and dialer
         binding.etSecretPin.setText(db.getMasterPin());
         
+        // Check if the phone's Device Admin is already granted to HFS
         boolean isAdminActive = devicePolicyManager.isAdminActive(adminComponent);
         binding.switchAntiUninstall.setChecked(isAdminActive);
 
+        // Load feature toggles for Stealth and Decoy modes
         binding.switchStealthMode.setChecked(db.isStealthModeEnabled());
         binding.switchFakeGallery.setChecked(db.isFakeGalleryEnabled());
     }
 
     /**
-     * Prepares the fingerprint scanner specifically for protecting the 'RE-SCAN' function.
+     * Configures the interaction logic for the settings components.
      */
-    private void setupBiometricGate() {
-        executor = ContextCompat.getMainExecutor(requireContext());
-        
-        biometricPrompt = new BiometricPrompt(this, executor, new BiometricPrompt.AuthenticationCallback() {
-            @Override
-            public void onAuthenticationError(int errorCode, @NonNull CharSequence errString) {
-                super.onAuthenticationError(errorCode, errString);
-            }
-
-            @Override
-            public void onAuthenticationSucceeded(@NonNull BiometricPrompt.AuthenticationResult result) {
-                super.onAuthenticationSucceeded(result);
-                // GATE OPEN: Proceed to the Face Setup Activity
-                Intent intent = new Intent(requireActivity(), FaceSetupActivity.class);
-                startActivity(intent);
-            }
-
-            @Override
-            public void onAuthenticationFailed() {
-                super.onAuthenticationFailed();
-                Toast.makeText(getContext(), "Authentication failed. Access Denied.", Toast.LENGTH_SHORT).show();
-            }
-        });
-
-        promptInfo = new BiometricPrompt.PromptInfo.Builder()
-                .setTitle("Identity Verification Required")
-                .setSubtitle("Confirm fingerprint to modify biometric data")
-                .setNegativeButtonText("Cancel")
-                .build();
-    }
-
-    private void setupClickListeners() {
-        // SAVE BUTTON: Updates credentials
+    private void setupListeners() {
+        // 1. SAVE SECURITY DATA
         binding.btnSaveSettings.setOnClickListener(v -> {
             String number = binding.etTrustedNumber.getText().toString().trim();
             String pin = binding.etSecretPin.getText().toString().trim();
 
             if (TextUtils.isEmpty(number) || pin.length() < 4) {
-                Toast.makeText(getContext(), "Enter a valid Phone Number and 4-digit PIN", Toast.LENGTH_SHORT).show();
+                Toast.makeText(getContext(), "Please provide a valid Trusted Number and 4-digit PIN", Toast.LENGTH_SHORT).show();
                 return;
             }
 
+            // Update persistent storage
             db.saveTrustedNumber(number);
             db.saveMasterPin(pin);
-            Toast.makeText(getContext(), "Security Data Saved", Toast.LENGTH_SHORT).show();
+            Toast.makeText(getContext(), "HFS Credentials Updated", Toast.LENGTH_SHORT).show();
         });
 
-        // RE-SCAN BUTTON: Now protected by the Biometric Gate
-        binding.btnRescanFace.setOnClickListener(v -> {
-            // Instead of opening the camera, we first check for the owner's fingerprint
-            biometricPrompt.authenticate(promptInfo);
-        });
-
-        // STEALTH MODE TOGGLE
+        // 2. STEALTH MODE TOGGLE (Dialer Trigger)
         binding.switchStealthMode.setOnCheckedChangeListener((buttonView, isChecked) -> {
             db.setStealthMode(isChecked);
             if (isChecked) {
-                showStealthWarningDialog();
+                showStealthWarning();
             } else {
-                toggleAppIconVisibility(true);
+                setAppIconVisible(true);
+                Toast.makeText(getContext(), "App Icon Restored to Home Screen", Toast.LENGTH_SHORT).show();
             }
         });
 
-        // ANTI-UNINSTALL TOGGLE
+        // 3. ANTI-UNINSTALL TOGGLE (Device Admin)
         binding.switchAntiUninstall.setOnCheckedChangeListener((buttonView, isChecked) -> {
             if (isChecked) {
-                activateAdmin();
+                activateDeviceAdmin();
             } else {
-                deactivateAdmin();
+                deactivateDeviceAdmin();
             }
         });
 
-        // DECOY SYSTEM TOGGLE
+        // 4. DECOY SYSTEM TOGGLE
         binding.switchFakeGallery.setOnCheckedChangeListener((buttonView, isChecked) -> {
             db.setFakeGalleryEnabled(isChecked);
         });
     }
 
-    private void showStealthWarningDialog() {
-        String currentCode = db.getMasterPin();
-        new AlertDialog.Builder(requireContext(), com.hfs.security.R.style.Theme_HFS_Dialog)
-                .setTitle("Stealth Mode Active")
-                .setMessage("Icon will be hidden. Dial " + currentCode + " and press CALL to open/unhide.")
-                .setPositiveButton("I UNDERSTAND", (dialog, which) -> toggleAppIconVisibility(false))
+    /**
+     * Warns the user about the secret dial code before hiding the icon.
+     */
+    private void showStealthWarning() {
+        String currentPin = db.getMasterPin();
+        new AlertDialog.Builder(requireContext(), R.style.Theme_HFS_Dialog)
+                .setTitle("Stealth Mode Enabled")
+                .setMessage("The icon will be hidden. Dial your PIN (" + currentPin + ") and press CALL to open the HFS portal.")
+                .setPositiveButton("I UNDERSTAND", (dialog, which) -> setAppIconVisible(false))
                 .setNegativeButton("CANCEL", (dialog, which) -> binding.switchStealthMode.setChecked(false))
                 .setCancelable(false)
                 .show();
     }
 
-    private void toggleAppIconVisibility(boolean show) {
+    /**
+     * Directly interacts with the PackageManager to Hide/Unhide the launcher icon.
+     */
+    private void setAppIconVisible(boolean visible) {
         PackageManager pm = requireContext().getPackageManager();
         ComponentName componentName = new ComponentName(requireContext(), SplashActivity.class);
-        pm.setComponentEnabledSetting(componentName,
-                show ? PackageManager.COMPONENT_ENABLED_STATE_ENABLED : PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
-                PackageManager.DONT_KILL_APP);
+        
+        int state = visible ? PackageManager.COMPONENT_ENABLED_STATE_ENABLED 
+                           : PackageManager.COMPONENT_ENABLED_STATE_DISABLED;
+        
+        pm.setComponentEnabledSetting(componentName, state, PackageManager.DONT_KILL_APP);
     }
 
-    private void activateAdmin() {
+    private void activateDeviceAdmin() {
         Intent intent = new Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN);
         intent.putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent);
-        intent.putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, "Required for Anti-Uninstall protection.");
+        intent.putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, "Protects HFS from being uninstalled by intruders.");
         startActivity(intent);
     }
 
-    private void deactivateAdmin() {
+    private void deactivateDeviceAdmin() {
         devicePolicyManager.removeActiveAdmin(adminComponent);
-        Toast.makeText(getContext(), "Protection Disabled", Toast.LENGTH_SHORT).show();
+        Toast.makeText(getContext(), "Anti-Uninstall Protection Disabled", Toast.LENGTH_SHORT).show();
     }
 
     @Override
